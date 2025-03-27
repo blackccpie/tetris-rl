@@ -20,6 +20,8 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 # THE SOFTWARE.
 
+import os
+
 import asyncio
 import argparse
 
@@ -48,11 +50,19 @@ def parse_args():
     parser.add_argument("--log-level", type=str, default="ERROR", help="Logging level.")
     return parser.parse_args()
 
+MODEL_NAME = 'models/tetris_ppo_model'
+
 async def train(args):
     
     # configure the environment, model, and trainer
     env = tetris_env(gb_path=args.rom, action_freq=args.freq, speedup=args.speedup, init_state=args.init, log_level=args.log_level, window="null")
-    model = PPO(policy=args.policy, env=env, verbose=1, n_steps=args.steps, batch_size=args.batch_size, n_epochs=args.epochs, gamma=args.gamma)
+    
+    if os.path.exists(f"{MODEL_NAME}.zip"):
+        print("-> continuing training!")
+        model= PPO.load(MODEL_NAME, env=env)
+    else:
+        model = PPO(policy=args.policy, env=env, verbose=1, n_steps=args.steps, batch_size=args.batch_size, n_epochs=args.epochs, gamma=args.gamma)
+
     trainer = agent_trainer(model)
 
     # Set logging outputs
@@ -63,7 +73,7 @@ async def train(args):
 
     await trainer.train(sessions=args.sessions, runs_per_session=args.runs)
 
-    model.save('models/tetris_ppo_model')
+    model.save(MODEL_NAME)
 
 if __name__ == "__main__":
     asyncio.run(train(parse_args()))
