@@ -22,6 +22,7 @@
 
 import time
 import logging
+from typing import List, Tuple, Dict, Optional
 
 import numpy as np
 from pyboy import PyBoy
@@ -39,7 +40,7 @@ action_names = {
     WindowEvent.PRESS_BUTTON_START: "START",
 }
 
-def parse_action(s):
+def parse_action(s: str) -> int:
     action = s.strip().upper()
     if action == "LEFT":
         return WindowEvent.PRESS_ARROW_LEFT
@@ -66,7 +67,18 @@ class tetris_env(Env):
     reward system for the Tetris game.
     """
 
-    def __init__(self, gb_path="", init_state="", speedup=1, action_freq=24, window="SDL2", log_level="ERROR"):
+    def __init__(self, gb_path: str = "", init_state: str = "", speedup: int = 1, action_freq: int = 24, window: str = "SDL2", log_level: str = "ERROR") -> None:
+        """
+        Initialize the Tetris environment.
+
+        Args:
+            gb_path (str): Path to the Game Boy ROM file.
+            init_state (str): Path to the initial state file.
+            speedup (int): Speed multiplier for the emulator.
+            action_freq (int): Frequency of actions in emulator ticks.
+            window (str): Window backend for PyBoy (e.g., "SDL2").
+            log_level (str): Logging level (e.g., "ERROR", "DEBUG").
+        """
         self.gb_path = gb_path
         self.init_state = init_state
         self.speedup = speedup
@@ -118,7 +130,16 @@ class tetris_env(Env):
         self.pyboy.set_emulation_speed(0 if self.window == "null" else self.speedup)
         self.reset()
 
-    def reset(self, seed=None):
+    def reset(self, seed: Optional[int] = None) -> Tuple[np.ndarray, Dict]:
+        """
+        Reset the environment to its initial state.
+
+        Args:
+            seed (int, optional): Seed for random number generation.
+
+        Returns:
+            tuple: Observation of the board and an empty dictionary.
+        """
         self.seed = seed
 
         # Load the initial state
@@ -131,7 +152,16 @@ class tetris_env(Env):
         self.board = observation
         return observation, {}
     
-    def step(self, action):
+    def step(self, action: int) -> Tuple[np.ndarray, float, bool, bool, Dict]:
+        """
+        Perform an action in the environment.
+
+        Args:
+            action (int): Index of the action to perform.
+
+        Returns:
+            tuple: Observation, reward, done flag, truncated flag, and additional info.
+        """
         self.do_input(self.valid_actions[action])
         observation = self.render()
         if observation[0].sum() >= len(observation[0]):
@@ -149,7 +179,13 @@ class tetris_env(Env):
 
         return observation, reward, False, False, {}
     
-    def render(self):
+    def render(self) -> np.ndarray:
+        """
+        Render the current state of the game board.
+
+        Returns:
+            numpy.ndarray: 2D array representing the game board.
+        """
         # Render the sprite map on the backgound
         background = np.asarray(self.pyboy.tilemap_background[2:12, 0:18])
         self.observation = np.where(background == 47, 0, 1)
@@ -166,7 +202,221 @@ class tetris_env(Env):
         logging.debug("Board State:\n{}".format(self.observation))
         return self.observation
 
-    def get_total_score(self, observation):
+    def get_total_score(self, observation: np.ndarray) -> int:
+        """
+        Calculate the total score based on the current observation.
+
+        Args:
+            observation (numpy.ndarray): Current state of the game board.
+
+        Returns:
+            int: Total score.
+        """
+
+        # see: https://codemyroad.wordpress.com/2013/04/14/tetris-ai-the-near-perfect-player/
+
+        #game_score = self.get_game_score()
+        height_score = self.get_aggregate_height(observation)
+        completion_score = self.get_complete_lines(observation)
+        holes_score = self.get_holes_count(observation)
+        bumpiness_score = self.get_bumpiness(observation)
+        logging.debug("Height Score: {}".format(height_score))
+        logging.debug("Bumpiness Score: {}".format(bumpiness_score))
+        logging.debug("Completion Score: {}".format(completion_score))
+        logging.debug("Holes Score: {}".format(holes_score))
+
+        scores = [
+            height_score,
+            completion_score,
+            holes_score,
+            bumpiness_score
+        ]
+        
+        # now compute and return a weighed sum of the scores
+        weights = [-0.5, 0.75, -0.35, -0.2]
+        return np.sum(np.multiply(weights, scores))
+
+    def get_game_score(self) -> int:
+        """
+        Get the current score from the emulator's memory.
+
+        Returns:
+            int: Current score.
+        """
+        return self.pyboy.memory[0xC0A0]
+    
+    def get_bumpiness(self, board: np.ndarray) -> int:
+        """
+        Calculate the bumpiness of the board, ie the variation of its column heights. 
+        It is computed by summing up the absolute differences between all two adjacent columns.
+
+        Args:
+            board (numpy.ndarray): Current state of the game board.
+
+        Returns:
+            int: Bumpiness score.
+        """
+        bumpiness = 0
+        for i in range(len(board[0]) - 1):
+            bumpiness += abs(np.sum(board[:, i]) - np.sum(board[:, i + 1]))
+        return bumpiness
+
+    def get_complete_lines(self, board: np.ndarray) -> int:
+        """
+        Count the number of complete lines in the board.
+
+        Args:
+            board (numpy.ndarray): Current state of the game board.
+
+        Returns:
+            int: Number of complete lines.
+        """
+        return np.sum(np.all(board, axis=1))
+
+    def get_aggregate_height(self, board: np.ndarray) -> int:
+        """
+        Calculate the aggregate height of the board.
+
+        Args:
+            board (numpy.ndarray): Current state of the game board.
+
+        Returns:
+            int: Aggregate height.
+        """
+        return np.sum(np.sum(board, axis=0))
+
+    def get_max_height(self, board: np.ndarray) -> int:
+        """
+        Get the maximum height of the blocks on the board.
+
+        Args:
+            board (numpy.ndarray): Current state of the game board.
+
+        Returns:
+            int: Maximum height.
+        """
+        return np.max(np.sum(board, axis=0))
+    
+    def get_holes_count(self, board: np.ndarray) -> int:
+        """
+        Count the number of holes in the board.
+
+        Args:
+            board (numpy.ndarray): Current state of the game board.
+
+        Returns:
+            int: Number of holes.
+        """
+        holes = 0
+        for i in range(len(board)):
+            for j in range(len(board[i])):
+                holes += self.is_hole(board, i, j)
+        return holes
+    
+    def is_hole(self, board: np.ndarray, x: int, y: int) -> bool:
+        """
+        Check if a given coordinate is a hole.
+
+        Args:
+            board (numpy.ndarray): Current state of the game board.
+            x (int): Row index.
+            y (int): Column index.
+
+        Returns:
+            bool: True if the coordinate is a hole, False otherwise.
+        """
+        if board[x][y] == 1:
+            return False
+        for adj in self.get_adjacent(board, x, y):
+            if board[adj[0]][adj[1]] == 0:
+                return False
+        return True
+    
+    def get_adjacent(self, board: np.ndarray, x: int, y: int) -> List[Tuple[int, int]]:
+        """
+        Get all adjacent coordinates for a given coordinate.
+
+        Args:
+            board (numpy.ndarray): Current state of the game board.
+            x (int): Row index.
+            y (int): Column index.
+
+        Returns:
+            list: List of tuples representing adjacent coordinates.
+        """
+        adjacent = []
+        shape = board.shape
+        if x > 0:
+            adjacent.append((x - 1, y))
+        if x < shape[0] - 1:
+            adjacent.append((x + 1, y))
+        if y > 0:
+            adjacent.append((x, y - 1))
+        if y < shape[1] - 1:
+            adjacent.append((x, y + 1))
+        return adjacent
+
+    def tick(self) -> None:
+        """
+        Advance the emulator by one tick.
+        """
+        self.pyboy.tick()
+    
+    def do_input(self, action: int) -> None:
+        """
+        Perform an input action in the emulator.
+
+        Args:
+            action (int): Action to perform.
+        """
+        # Press and release the button to simulate human input
+        self.pyboy.send_input(action)
+        for i in range(self.action_freq):
+            if i == 8:
+                if action < 4:
+                    self.pyboy.send_input(self.release_arrow[action])
+                if action > 3 and action < 6: 
+                    self.pyboy.send_input(self.release_button[action - 4])
+                if action == WindowEvent.PRESS_BUTTON_START:
+                    self.pyboy.send_input(WindowEvent.RELEASE_BUTTON_START)
+            self.pyboy.tick()
+        logging.debug("Action: {}".format(action_names[action]))
+
+    def save_state(self, dest: str = "") -> None:
+        """
+        Save the current state of the emulator to a file.
+
+        Args:
+            dest (str): Destination file path. Defaults to a timestamped filename.
+        """
+        if dest == "":
+            dest = time.strftime("%Y%m%d-%H%M%S.save")
+
+        with open(dest, "wb") as f:
+            self.pyboy.save_state(f)
+
+    def load_state(self, src: str) -> None:
+        """
+        Load a saved state into the emulator.
+
+        Args:
+            src (str): Source file path of the saved state.
+        """
+        with open(src, "rb") as f:
+            self.pyboy.load_state(f)
+
+    ############## OLD SCORING ############## 
+
+    def get_total_score_old(self, observation: np.ndarray) -> int:
+        """
+        Calculate the total score based on the current observation.
+
+        Args:
+            observation (numpy.ndarray): Current state of the game board.
+
+        Returns:
+            int: Total score.
+        """
         score = self.get_score()
         logging.debug("Score: {}".format(score))
 
@@ -185,10 +435,17 @@ class tetris_env(Env):
         ]
         return np.sum(scores)
 
-    def get_score(self):
-        return self.pyboy.memory[0xC0A0]
-    
-    def get_placement_score(self, board):
+    def get_placement_score(self, board: np.ndarray) -> int:
+        """
+        Calculate the placement score based on the difference between the current
+        and previous board states.
+
+        Args:
+            board (numpy.ndarray): Current state of the game board.
+
+        Returns:
+            int: Placement score.
+        """
         score = 0
         height = self.get_max_height(board)
         for i in range(len(board)):
@@ -196,7 +453,16 @@ class tetris_env(Env):
             score += diff * i
         return score
     
-    def get_surface_area(self, board):
+    def get_surface_area(self, board: np.ndarray) -> int:
+        """
+        Calculate the surface area of the blocks on the board.
+
+        Args:
+            board (numpy.ndarray): Current state of the game board.
+
+        Returns:
+            int: Surface area.
+        """
         area = 0
         for i in range(len(board)):
             for j in range(len(board[i])):
@@ -207,16 +473,24 @@ class tetris_env(Env):
                             area += 1
         return area
     
-    def get_board_score(self, board):
+    def get_board_score(self, board: np.ndarray) -> int:
+        """
+        Calculate the score of the board based on holes, stack height, and completion.
+
+        Args:
+            board (numpy.ndarray): Current state of the game board.
+
+        Returns:
+            int: Board score.
+        """
         #n = len(board)
         #score_vector = [i / n for i in range(n)]
         #for i in range(len(board)):
         #    current_row = np.sum(board[i]) / len(board[i])
         #    score += current_row * score_vector[i]
-        hole_score = self.count_holes(board) * -1
+        hole_score = self.get_holes_count(board) * -1
         
         height = self.get_max_height(board)
-        width = self.get_max_width(board)
         stack_score = height * -1
 
         completion_score = 0
@@ -230,74 +504,3 @@ class tetris_env(Env):
         print("Completion: {}".format(completion_score))
         return hole_score + stack_score
         #return hole_score + stack_score + completion_score
-    
-    def get_max_height(self, board):
-        return np.max(np.sum(board, axis=0))
-    
-    def get_max_width(self, board):
-        return np.max(np.sum(board, axis=1))
-    
-    def count_holes(self, board):
-        """
-        Count all the "holes" in the board
-        """
-        holes = 0
-        for i in range(len(board)):
-            for j in range(len(board[i])):
-                holes += self.is_hole(board, i, j)
-        return holes
-    
-    def is_hole(self, board, x, y):
-        """
-        Check if a given coordinate is a hole
-        """
-        if board[x][y] == 1:
-            return False
-        for adj in self.get_adjacent(board, x, y):
-            if board[adj[0]][adj[1]] == 0:
-                return False
-        return True
-    
-    def get_adjacent(self, board, x, y):
-        """
-        Get all the adjacent coordinates for a given coordinate
-        """
-        adjacent = []
-        shape = board.shape
-        if x > 0:
-            adjacent.append((x - 1, y))
-        if x < shape[0] - 1:
-            adjacent.append((x + 1, y))
-        if y > 0:
-            adjacent.append((x, y - 1))
-        if y < shape[1] - 1:
-            adjacent.append((x, y + 1))
-        return adjacent
-
-    def tick(self):
-        self.pyboy.tick()
-    
-    def do_input(self, action):
-        # Press and release the button to simulate human input
-        self.pyboy.send_input(action)
-        for i in range(self.action_freq):
-            if i == 8:
-                if action < 4:
-                    self.pyboy.send_input(self.release_arrow[action])
-                if action > 3 and action < 6: 
-                    self.pyboy.send_input(self.release_button[action - 4])
-                if action == WindowEvent.PRESS_BUTTON_START:
-                    self.pyboy.send_input(WindowEvent.RELEASE_BUTTON_START)
-            self.pyboy.tick()
-        logging.debug("Action: {}".format(action_names[action]))
-
-    def save_state(self, dest=""):
-        if dest == "":
-            dest = time.strftime("%Y%m%d-%H%M%S.save")
-
-        with open(dest, "wb") as f:
-            self.pyboy.save_state(f)
-
-    def load_state(self, src):
-        with open(src, "rb") as f:
-            self.pyboy.load_state(f)

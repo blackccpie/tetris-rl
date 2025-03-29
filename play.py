@@ -58,4 +58,4 @@ for _ in range(runs):
         obs, reward, terminated, _, _ = env.step(action)
         env.render()
         steps += 1
-    print("{}: Seed: {}, Steps: {}, Score: {}".format("schema", seed, steps, env.get_score()))
+    print("{}: Seed: {}, Steps: {}, Score: {}".format("schema", seed, steps, env.get_game_score()))
