@@ -247,8 +247,9 @@ class tetris_env(Env):
     
     def get_bumpiness(self, board: np.ndarray) -> int:
         """
-        Calculate the bumpiness of the board, ie the variation of its column heights. 
-        It is computed by summing up the absolute differences between all two adjacent columns.
+        Calculate the bumpiness of the board, i.e., the variation of its column heights.
+        It is computed by summing up the absolute differences between the heights of
+        adjacent columns.
 
         Args:
             board (numpy.ndarray): Current state of the game board.
@@ -256,9 +257,19 @@ class tetris_env(Env):
         Returns:
             int: Bumpiness score.
         """
-        bumpiness = 0
-        for i in range(len(board[0]) - 1):
-            bumpiness += abs(np.sum(board[:, i]) - np.sum(board[:, i + 1]))
+        column_heights = [
+            self.get_column_height(board[:, col], board.shape[0])
+            for col in range(board.shape[1])
+        ]
+
+        # Calculate bumpiness as the sum of absolute differences between adjacent columns
+        bumpiness = sum(
+            abs(column_heights[i] - column_heights[i + 1])
+            for i in range(len(column_heights) - 1)
+        )
+
+        logging.debug("Column Heights: {}".format(column_heights))
+        logging.debug("Bumpiness: {}".format(bumpiness))
         return bumpiness
 
     def get_complete_lines(self, board: np.ndarray) -> int:
@@ -275,7 +286,8 @@ class tetris_env(Env):
 
     def get_aggregate_height(self, board: np.ndarray) -> int:
         """
-        Calculate the aggregate height of the board.
+        Calculate the aggregate height of the board based on the first valid block
+        in each column when going from the top.
 
         Args:
             board (numpy.ndarray): Current state of the game board.
@@ -283,23 +295,20 @@ class tetris_env(Env):
         Returns:
             int: Aggregate height.
         """
-        return np.sum(np.sum(board, axis=0))
+        aggregate_height = sum(
+            self.get_column_height(board[:, col], board.shape[0])
+            for col in range(board.shape[1])
+        )
 
-    def get_max_height(self, board: np.ndarray) -> int:
-        """
-        Get the maximum height of the blocks on the board.
-
-        Args:
-            board (numpy.ndarray): Current state of the game board.
-
-        Returns:
-            int: Maximum height.
-        """
-        return np.max(np.sum(board, axis=0))
+        logging.debug("Aggregate Height: {}".format(aggregate_height))
+        return aggregate_height
     
     def get_holes_count(self, board: np.ndarray) -> int:
         """
         Count the number of holes in the board.
+
+        A hole is defined as an empty space such that there is at least one tile
+        in the same column above it.
 
         Args:
             board (numpy.ndarray): Current state of the game board.
@@ -308,54 +317,16 @@ class tetris_env(Env):
             int: Number of holes.
         """
         holes = 0
-        for i in range(len(board)):
-            for j in range(len(board[i])):
-                holes += self.is_hole(board, i, j)
+        for col in range(board.shape[1]):  # Iterate over each column
+            column = board[:, col]
+            block_found = False
+            for row in range(board.shape[0]):  # Iterate over each row in the column
+                if column[row] == 1:
+                    block_found = True  # A block is found above
+                elif block_found and column[row] == 0:
+                    holes += 1  # Count the empty space as a hole
         return holes
     
-    def is_hole(self, board: np.ndarray, x: int, y: int) -> bool:
-        """
-        Check if a given coordinate is a hole.
-
-        Args:
-            board (numpy.ndarray): Current state of the game board.
-            x (int): Row index.
-            y (int): Column index.
-
-        Returns:
-            bool: True if the coordinate is a hole, False otherwise.
-        """
-        if board[x][y] == 1:
-            return False
-        for adj in self.get_adjacent(board, x, y):
-            if board[adj[0]][adj[1]] == 0:
-                return False
-        return True
-    
-    def get_adjacent(self, board: np.ndarray, x: int, y: int) -> List[Tuple[int, int]]:
-        """
-        Get all adjacent coordinates for a given coordinate.
-
-        Args:
-            board (numpy.ndarray): Current state of the game board.
-            x (int): Row index.
-            y (int): Column index.
-
-        Returns:
-            list: List of tuples representing adjacent coordinates.
-        """
-        adjacent = []
-        shape = board.shape
-        if x > 0:
-            adjacent.append((x - 1, y))
-        if x < shape[0] - 1:
-            adjacent.append((x + 1, y))
-        if y > 0:
-            adjacent.append((x, y - 1))
-        if y < shape[1] - 1:
-            adjacent.append((x, y + 1))
-        return adjacent
-
     def tick(self) -> None:
         """
         Advance the emulator by one tick.
@@ -405,7 +376,70 @@ class tetris_env(Env):
         with open(src, "rb") as f:
             self.pyboy.load_state(f)
 
+    def get_column_height(self, column: np.ndarray, board_height: int) -> int:
+        """
+        Calculate the height of a column based on the first valid block from the top.
+
+        Args:
+            column (numpy.ndarray): A single column of the board.
+            board_height (int): Total height of the board.
+
+        Returns:
+            int: Height of the column.
+        """
+        for row in range(board_height):
+            if column[row] == 1:
+                return board_height - row  # Height is from the bottom
+        return 0  # If no blocks are found, height is 0
+
     ############## OLD SCORING ############## 
+
+    def is_hole(self, board, x, y):
+        """
+        Check if a given coordinate is a hole
+        """
+        if board[x][y] == 1:
+            return False
+        for adj in self.get_adjacent(board, x, y):
+            if board[adj[0]][adj[1]] == 0:
+                return False
+        return True
+
+    def get_adjacent(self, board: np.ndarray, x: int, y: int) -> List[Tuple[int, int]]:
+        """
+        Get all adjacent coordinates for a given coordinate.
+
+        Args:
+            board (numpy.ndarray): Current state of the game board.
+            x (int): Row index.
+            y (int): Column index.
+
+        Returns:
+            list: List of tuples representing adjacent coordinates.
+        """
+        adjacent = []
+        shape = board.shape
+        if x > 0:
+            adjacent.append((x - 1, y))
+        if x < shape[0] - 1:
+            adjacent.append((x + 1, y))
+        if y > 0:
+            adjacent.append((x, y - 1))
+        if y < shape[1] - 1:
+            adjacent.append((x, y + 1))
+        return adjacent
+
+    def get_max_height(self, board: np.ndarray) -> int:
+        """
+        Get the maximum height of the blocks on the board.
+
+        Args:
+            board (numpy.ndarray): Current state of the game board.
+
+        Returns:
+            int: Maximum height.
+        """
+        return np.max(np.sum(board, axis=0))
 
     def get_total_score_old(self, observation: np.ndarray) -> int:
         """
