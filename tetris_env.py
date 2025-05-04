@@ -140,12 +140,18 @@ class tetris_env(Env):
         Returns:
             tuple: Observation of the board and an empty dictionary.
         """
-        self.seed = seed
+        
+        super().reset(seed=seed)
 
         # Load the initial state
         if self.init_state != "":
             with open(self.init_state, "rb") as f:
                 self.pyboy.load_state(f)
+
+        # Randomize the game state
+        if seed is not None:
+            for _ in range(seed % 60):
+                self.pyboy.tick()
 
         observation = self.render()
         self.current_score = self.get_total_score(observation)
