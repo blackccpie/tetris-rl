@@ -22,6 +22,7 @@
 
 import logging
 import time
+from pathlib import Path
 
 import numpy as np
 from gymnasium import Env, spaces
@@ -94,8 +95,22 @@ class tetris_env(Env):  # noqa: N801
         self.init_state = init_state
         self.speedup = speedup
         self.action_freq = action_freq
-        self.window = window
-        logging.basicConfig(level=log_level.upper())
+        if window not in ("null", "SDL2", "headless"):
+            raise ValueError(f"Invalid window '{window}': expected 'null', 'SDL2' or 'headless'")
+        # "headless" is an alias for "null" (unlimited speed, no window)
+        self.window = "null" if window == "headless" else window
+        if not logging.getLogger().hasHandlers():
+            logging.basicConfig(level=log_level.upper())
+        else:
+            logging.getLogger().setLevel(log_level.upper())
+        if self.gb_path and not Path(self.gb_path).exists():
+            raise FileNotFoundError(
+                f"ROM not found: {self.gb_path} — place a legal dump at roms/tetris.gb "
+                "(see README.md). If you use a different path, pass gb_path explicitly."
+            )
+        if self.init_state and not Path(self.init_state).exists():
+            raise FileNotFoundError(f"Init state not found: {self.init_state}")
+        self._closed = False
 
         self.valid_actions = [
             WindowEvent.PRESS_ARROW_LEFT,
@@ -305,7 +320,7 @@ class tetris_env(Env):  # noqa: N801
             column = board[:, col]
             block_found = False
             for row in range(board.shape[0]):
-                if column[row] == 1:
+                if column[row] != 0:
                     block_found = True
                 elif block_found and column[row] == 0:
                     holes += 1
@@ -364,6 +379,9 @@ class tetris_env(Env):  # noqa: N801
         """
         Calculate the height of a column based on the first valid block from the top.
 
+        Any non-zero compressed tile (1-8) counts as a block; 0 is empty.
+        Used by bumpiness/aggregate_height (reward itself uses game_wrapper.score).
+
         Args:
             column (numpy.ndarray): A single column of the board.
             board_height (int): Total height of the board.
@@ -372,12 +390,18 @@ class tetris_env(Env):  # noqa: N801
             int: Height of the column.
         """
         for row in range(board_height):
-            if column[row] == 1:
+            if column[row] != 0:
                 return board_height - row
         return 0
 
     def close(self) -> None:
         """
-        Clean up resources. Stops the PyBoy emulator.
+        Clean up resources. Stops the PyBoy emulator. Idempotent.
         """
-        self.pyboy.stop()
+        if getattr(self, "_closed", False):
+            return
+        self._closed = True
+        try:
+            self.pyboy.stop()
+        except Exception:
+            pass
