@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import numpy as np
 import pytest
 from gymnasium import Env, spaces
@@ -7,6 +9,10 @@ from tetris_env import tetris_env
 
 @pytest.fixture(scope="module")
 def env():
+    if not Path("roms/tetris.gb").exists():
+        pytest.skip("roms/tetris.gb not found (CI without ROM)")
+    if not Path("states/init.state").exists():
+        pytest.skip("states/init.state not found")
     e = tetris_env(gb_path="roms/tetris.gb", window="null", log_level="ERROR")
     yield e
     e.close()
@@ -49,7 +55,7 @@ class TestEnvGymnasiumAPI:
         obs, reward, terminated, truncated, info = result
         assert isinstance(obs, np.ndarray)
         assert obs.shape == (18, 10)
-        assert isinstance(reward, (float, int, np.floating))
+        assert isinstance(reward, float | int | np.floating)
         assert isinstance(terminated, bool)
         assert isinstance(truncated, bool)
         assert isinstance(info, dict)
@@ -71,10 +77,13 @@ class TestEnvGymnasiumAPI:
         assert obs.shape == (18, 10)
         assert obs.dtype == np.uint8
 
-    def test_close(self, env):
-        env.close()
-        # Re-create since the fixture scope yields once
-        # Verifying close didn't crash is enough
+    def test_close(self):
+        # isolated env so module fixture remains usable for later tests (Ubuntu idempotency)
+        if not Path("roms/tetris.gb").exists():
+            pytest.skip("requires ROM")
+        e = tetris_env(gb_path="roms/tetris.gb", window="null", log_level="ERROR")
+        e.close()
+        e.close()  # idempotent per phase 3
 
     def test_get_game_score_returns_int(self, env):
         score = env.get_game_score()
