@@ -24,13 +24,16 @@ Toy/experimental Tetris RL using PyBoy (Game Boy emulator), Gymnasium, Stable-Ba
 - Run: `ruff check . && ruff format --check .`
 
 ## Testing
-- `uv run pytest tests/ -v`
-- Fixtures: module-scoped `env` that creates a real `tetris_env` with `window="null"`.
-- Test files: `tests/test_helpers.py` (pure-function tests), `tests/test_env.py` (Gymnasium API integration).
+- `uv run pytest tests/ -v` — 40 pass with `roms/tetris.gb`, 24 pass/16 skipped without (ROM-less CI via `helper_env` + `pytest.skip`).
+- Fixtures: `env` (integration, `window="null"`, skips without ROM) and `helper_env` (`__new__` without PyBoy for pure helpers, e.g. `get_holes_count`, `get_column_height`).
+- Guard coverage: `TestTetrisEnvGuards` checks ROM/init_state/window guards, `headless`→`null` alias, `close` idempotency, and compressed-tile `!=0` fix.
+- Test files: `tests/test_helpers.py` (pure-function + guards, now ROM-less), `tests/test_env.py` (Gymnasium API integration, skips without ROM).
+- Pillow warnings are expected without `pillow` (`pyboy.api.screen`).
+- Run: `uv run ruff check . && ruff format --check .` must pass.
 
 ## Entry Points
-- `uv run train.py` — trains PPO; handles incompatible saved models gracefully; saves to `--model-name`.
-- `uv run play.py` — loads saved model and plays with SDL2 window.
+- `uv run train.py --device auto|cpu|cuda --window null|SDL2|headless` — auto→`cpu` on <4GB VRAM (GTX 960) or `sm_52` incompatibility (`torch 2.13+cu130` ≥`sm_75`); handles incompatible saved models gracefully; ensures `models/` exists before save.
+- `uv run play.py --rom/--init/--model/--window/--device/--deterministic` — SDL2 warns if no `DISPLAY`/`WAYLAND_DISPLAY` (use `xvfb-run -a`); `null`/`headless` for headless.
 
 ## Key Files
 - `tetris_env.py` — Gymnasium Env subclass; 7 actions, observation (18,10) uint8, reward = score delta.
