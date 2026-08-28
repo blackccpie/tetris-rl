@@ -20,42 +20,30 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 # THE SOFTWARE.
 
-from stable_baselines3 import PPO
-
 import numpy as np
+from stable_baselines3 import PPO
 
 from tetris_env import tetris_env
 
-from pyboy import PyBoy
-def test_play():
-    pyboy = PyBoy('roms/tetris.gb')
+if __name__ == "__main__":
+    runs = 4
+    init_state = "states/init.state"
 
-    while True:
-        pyboy.tick()
+    env = tetris_env(
+        gb_path="roms/tetris.gb", action_freq=24, speedup=1, init_state=init_state, log_level="INFO", window="SDL2"
+    )
 
-#test_play()
+    model = PPO.load("models/tetris_ppo_model", env=env)
 
-runs = 4
-init_state = "states/init.state"
+    for _ in range(runs):
+        seed = np.random.randint(0, 100000)
+        obs, _ = env.reset(seed=seed)
+        terminated = False
+        steps = 0
 
-env = tetris_env(gb_path='roms/tetris.gb', action_freq=24, speedup=5, init_state=init_state, log_level="INFO", window="SDL2")
-
-#while True:
-    #env.render()
-    #env.tick()
-
-model = PPO.load("models/tetris_ppo_model", env=env)
-
-# Run the model in the environment
-for _ in range(runs):
-    seed = np.random.randint(0, 100000)
-    obs, _ = env.reset(seed=seed)
-    terminated = False
-    steps = 0
-
-    while not terminated:
-        action, _states = model.predict(obs, deterministic=True)
-        obs, reward, terminated, _, _ = env.step(action)
-        env.render()
-        steps += 1
-    print("{}: Seed: {}, Steps: {}, Score: {}".format("schema", seed, steps, env.get_game_score()))
+        while not terminated:
+            action, _states = model.predict(obs, deterministic=True)
+            obs, reward, terminated, _, _ = env.step(action)
+            env.render()
+            steps += 1
+        print(f"Seed: {seed}, Steps: {steps}, Score: {env.get_game_score()}")

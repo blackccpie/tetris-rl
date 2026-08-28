@@ -20,11 +20,10 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 # THE SOFTWARE.
 
-import asyncio
-
 from tqdm import tqdm
 
-class agent_trainer:
+
+class agent_trainer:  # noqa: N801
     """
     Trains and evaluates an agent for a reinforcement learning task.
     """
@@ -32,14 +31,9 @@ class agent_trainer:
     def __init__(self, model):
         self.model = model
 
-    async def train(self, sessions=40, runs_per_session=4):
+    def train(self, sessions=40, runs_per_session=4):
         """
         Trains the agent for the specified number of steps.
         """
-
-        # train for the number of sessions
         for _ in tqdm(range(sessions)):
             self.model.learn(total_timesteps=self.model.n_steps * runs_per_session)
-
-            # ensure that async loggers have a chance to run
-            await asyncio.sleep(5)
