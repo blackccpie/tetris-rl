@@ -13,7 +13,8 @@ Toy/experimental Tetris RL using PyBoy (Game Boy emulator), Gymnasium, Stable-Ba
 ## Package Management
 - `uv` — no `requirements.txt`; dependencies in `[project.dependencies]` in `pyproject.toml`.
 - `uv sync` to install, `uv run` to execute.
-- PyTorch pinned `<2.3.0` (no wheel for macOS 12 x86_64 beyond that).
+- PyTorch: `torch>=2.2` (unpinned). Former `<2.3.0` pin for macOS 12 x86_64 (no wheel beyond 2.2) removed; on that platform pin manually via `uv pip install "torch<2.3"` if needed.
+- Ubuntu 24.04: requires `libsdl2-2.0-0` at runtime (`sudo apt install libsdl2-2.0-0`); `libsdl2-dev` only to build PyBoy from sdist. With NVIDIA GPU <4GB VRAM use `--device cpu` (see `train.py`). Large CUDA wheels (~2GB) — on slow link use CPU wheel: `uv pip install torch --index-url https://download.pytorch.org/whl/cpu` after `uv sync --no-install-package torch`.
 
 ## Code Style (enforced by Ruff)
 - Line length: 120

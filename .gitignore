@@ -17,8 +17,10 @@ venv/
 
 # Project artifacts
 models/*.zip
+!models/.gitkeep
 sessions/
 roms/*.gb
+!roms/.gitkeep
 roms/*.zip
 
 # IDE

@@ -11,7 +11,7 @@ dependencies = [
     "numpy",
     "pyboy",
     "stable-baselines3",
-    "torch>=2.0.0,<2.3.0",
+    "torch>=2.2",
     "tqdm",
 ]
 
