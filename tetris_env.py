@@ -77,6 +77,8 @@ class tetris_env(Env):  # noqa: N801
         action_freq: int = 24,
         window: str = "SDL2",
         log_level: str = "ERROR",
+        shaped_alpha: float = 0.1,
+        shaped_weights: tuple[float, float, float, float] | None = None,
     ) -> None:
         """
         Initialize the Tetris environment.
@@ -88,6 +90,15 @@ class tetris_env(Env):  # noqa: N801
             action_freq (int): Frequency of actions in emulator ticks.
             window (str): Window backend for PyBoy (e.g., "SDL2").
             log_level (str): Logging level (e.g., "ERROR", "DEBUG").
+            shaped_alpha (float): PBRS coefficient for dense shaped delta.
+                0.0 = pure score (legacy), 0.1-0.3 recommended (hybrid).
+                Dense term is `alpha * (shaped - prev_shaped)` where shaped
+                is `get_total_score()` (height/lines/holes/bump).
+            shaped_weights (tuple): Optional override for
+                (height, lines, holes, bump) weights. Defaults to
+                (-0.5, 0.75, -0.35, -0.2) — use donnybadamo GA-tuned
+                (-0.54 max_h, +9.9 lines, -9.25 holes, -1.43 bump, +...) via
+                custom wrapper if desired.
         """
         super().__init__()
 
@@ -111,6 +122,10 @@ class tetris_env(Env):  # noqa: N801
         if self.init_state and not Path(self.init_state).exists():
             raise FileNotFoundError(f"Init state not found: {self.init_state}")
         self._closed = False
+        self.shaped_alpha = float(shaped_alpha)
+        # (height, completion, holes, bumpiness) weights — BERTsekas/Dellacherie + donny GA
+        self.shaped_weights = shaped_weights if shaped_weights is not None else (-0.5, 0.75, -0.35, -0.2)
+        self.prev_shaped: float = 0.0
 
         self.valid_actions = [
             WindowEvent.PRESS_ARROW_LEFT,
@@ -141,6 +156,7 @@ class tetris_env(Env):  # noqa: N801
         self.observation_space = spaces.Box(low=0, high=8, shape=self.output_shape, dtype=np.uint8)
 
         self.current_score = 0
+        self.prev_shaped = 0.0
 
         self.pyboy = PyBoy(
             gamerom=self.gb_path,
@@ -148,6 +164,29 @@ class tetris_env(Env):  # noqa: N801
             no_input=False,
             window=self.window,
         )
+
+        # Patch frame_limiter to avoid "Exception ignored in PyBoyWindowPlugin.frame_limiter"
+        # when CTRL+C is delivered during the SDL sleep. The Cython plugin reports
+        # KeyboardInterrupt as ignored if it propagates out of time.sleep. Catch it
+        # inside and set quitting so the outer loop can exit cleanly.
+        try:
+            from pyboy.plugins.base_plugin import PyBoyWindowPlugin
+
+            _orig_frame_limiter = PyBoyWindowPlugin.frame_limiter
+
+            def _safe_frame_limiter(self, speed):  # type: ignore[no-untyped-def]
+                try:
+                    return _orig_frame_limiter(self, speed)
+                except KeyboardInterrupt:
+                    try:
+                        self.pyboy.quitting = True
+                    except Exception:
+                        pass
+                    return False
+
+            PyBoyWindowPlugin.frame_limiter = _safe_frame_limiter  # type: ignore[method-assign,assignment]
+        except Exception:
+            pass
 
         self.pyboy.set_emulation_speed(0 if self.window == "null" else self.speedup)
 
@@ -177,6 +216,7 @@ class tetris_env(Env):  # noqa: N801
 
         observation = self.render()
         self.current_score = self.get_game_score()
+        self.prev_shaped = self.get_total_score(observation)
         self.board = observation
         return observation, {}
 
@@ -189,20 +229,31 @@ class tetris_env(Env):  # noqa: N801
 
         Returns:
             tuple: Observation, reward, terminated flag, truncated flag, and additional info.
+                   Reward is hybrid PBRS: score delta + alpha * shaped delta
+                   (alpha=0 → legacy pure score). Shaped is get_total_score().
         """
         self.do_input(action)
         observation = self.render()
 
-        if self.pyboy.game_wrapper.game_over():
-            return observation, -100, True, False, {}
-
         game_score = self.get_game_score()
-        reward = game_score - self.current_score
+        shaped = self.get_total_score(observation)
+        shaped_delta = shaped - self.prev_shaped
+        score_delta = game_score - self.current_score
+
+        # hybrid PBRS — keeps optimal policy (Ng et al. 1999) while densifying
+        reward = score_delta + self.shaped_alpha * shaped_delta
+
+        # update trackers before early return so next reset is consistent
         self.current_score = game_score
+        self.prev_shaped = shaped
         self.board = observation
 
-        logging.debug(f"Game Score: {game_score}")
-        logging.debug(f"Reward: {reward}")
+        if self.pyboy.game_wrapper.game_over():
+            # keep -100 terminal penalty but include shaped term for PBRS
+            # (if alpha=0, this is exactly legacy -100)
+            return observation, -100 + self.shaped_alpha * shaped_delta, True, False, {}
+
+        logging.debug(f"Game Score: {game_score} Shaped: {shaped:.2f} Reward: {reward:.2f}")
 
         return observation, reward, False, False, {}
 
@@ -242,8 +293,8 @@ class tetris_env(Env):  # noqa: N801
 
         scores = [height_score, completion_score, holes_score, bumpiness_score]
 
-        weights = [-0.5, 0.75, -0.35, -0.2]
-        return np.sum(np.multiply(weights, scores))
+        weights = getattr(self, "shaped_weights", (-0.5, 0.75, -0.35, -0.2))
+        return float(np.sum(np.multiply(weights, scores)))
 
     def get_game_score(self) -> int:
         """
@@ -331,6 +382,8 @@ class tetris_env(Env):  # noqa: N801
         Advance the emulator by one tick.
         """
         self.pyboy.tick()
+        if getattr(self.pyboy, "quitting", False):
+            raise KeyboardInterrupt
 
     def do_input(self, action_idx: int) -> None:
         """
@@ -350,6 +403,8 @@ class tetris_env(Env):  # noqa: N801
                 elif press_event == WindowEvent.PRESS_BUTTON_START:
                     self.pyboy.send_input(WindowEvent.RELEASE_BUTTON_START)
             self.pyboy.tick()
+            if getattr(self.pyboy, "quitting", False):
+                raise KeyboardInterrupt
         logging.debug(f"Action: {action_names[press_event]}")
 
     def save_state(self, dest: str = "") -> None:

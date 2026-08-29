@@ -39,6 +39,7 @@ def parse_args():
     parser.add_argument("--freq", type=int, default=24, help="Action frequency.")
     parser.add_argument("--runs", type=int, default=4, help="Number of runs.")
     parser.add_argument("--window", type=str, default="SDL2", choices=["null", "SDL2", "headless"])
+    parser.add_argument("--shaped-alpha", type=float, default=0.1, help="PBRS alpha (must match train, 0.0 legacy).")
     parser.add_argument("--log-level", type=str, default="INFO")
     parser.add_argument("--deterministic", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--device", type=str, default="auto", choices=["auto", "cpu", "cuda"])
@@ -63,20 +64,42 @@ if __name__ == "__main__":
         init_state=args.init,
         log_level=args.log_level,
         window=window,
+        shaped_alpha=args.shaped_alpha,
     )
 
-    model = PPO.load(args.model, env=env, device=device)
+    # PPO.load needs custom_objects for TetrisCNN if saved with CnnPolicy
+    custom_objects = None
+    try:
+        from train import TetrisCNN
 
-    for _ in range(args.runs):
-        seed = np.random.randint(0, 100000)
-        obs, _ = env.reset(seed=seed)
-        terminated = False
-        steps = 0
+        custom_objects = {"TetrisCNN": TetrisCNN}
+    except Exception:
+        pass
+    try:
+        model = PPO.load(args.model, env=env, device=device, custom_objects=custom_objects)
+    except Exception:
+        model = PPO.load(args.model, env=env, device=device)
 
-        while not terminated:
-            action, _states = model.predict(obs, deterministic=args.deterministic)
-            obs, reward, terminated, _, _ = env.step(action)
-            env.render()
-            steps += 1
-        print(f"Seed: {seed}, Steps: {steps}, Score: {env.get_game_score()}")
-    env.close()
+    try:
+        for _ in range(args.runs):
+            seed = np.random.randint(0, 100000)
+            obs, _ = env.reset(seed=seed)
+            terminated = False
+            steps = 0
+
+            while not terminated:
+                # Allow clean exit when SIGINT was delivered inside frame_limiter
+                # (patched to set pyboy.quitting instead of raising)
+                if getattr(env.pyboy, "quitting", False):
+                    raise KeyboardInterrupt
+                action, _states = model.predict(obs, deterministic=args.deterministic)
+                obs, reward, terminated, _, _ = env.step(action)
+                env.render()
+                steps += 1
+                if getattr(env.pyboy, "quitting", False):
+                    raise KeyboardInterrupt
+            print(f"Seed: {seed}, Steps: {steps}, Score: {env.get_game_score()}", flush=True)
+    except KeyboardInterrupt:
+        print("\nInterrupted by user (CTRL+C) — closing emulator...", flush=True)
+    finally:
+        env.close()
