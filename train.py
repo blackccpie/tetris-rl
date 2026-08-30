@@ -72,18 +72,53 @@ class TetrisCNN(BaseFeaturesExtractor):
         return self.linear(self.cnn(observations))
 
 
+def _check_torch_sm_compat() -> str | None:
+    """Return warning if current torch cannot run on this GPU (sm_52 vs sm_75+)."""
+    try:
+        import torch
+
+        if not torch.cuda.is_available():
+            return None
+        cap = torch.cuda.get_device_capability(0)
+        hw = cap[0] * 10 + cap[1]  # e.g. 52
+        arches = torch.cuda.get_arch_list() if hasattr(torch.cuda, "get_arch_list") else []
+        # torch 2.7+ lists sm_75+ only; sm_50 covers 5.0-5.9
+        # If hw <75 and 'sm_50' not in arches, incompatible
+        if hw < 75 and not any(a in ("sm_50", "sm_52", "sm_60") for a in arches):
+            # also sm_60 is 6.0 but still <7.5, but 2.7 drops 50/60
+            if "sm_50" not in arches:
+                return (
+                    f"GPU sm_{cap[0]}{cap[1]} (e.g. GTX 960 sm_52) incompatible with torch {torch.__version__} "
+                    f"arch {arches} (needs sm_75+). Last sm_52 wheel is 2.6.0+cu124: "
+                    f"./scripts/setup_legacy_gpu.sh && uv run --no-sync train.py --device cuda ..."
+                )
+    except Exception:
+        pass
+    return None
+
+
 def _resolve_device(requested: str) -> str:
     """Resolve --device auto/cpu/cuda with Ubuntu VRAM heuristic.
 
     On auto, falls back to cpu if CUDA is unavailable or GPU has <4GB VRAM
     (e.g. GTX 960 2GB on Ubuntu 24.04). Pass --device cuda to force.
+    Also warns if torch is too new for sm_52 (torch>=2.7 drops sm_50).
     """
+    # early compat warning even for --device cuda
+    msg = _check_torch_sm_compat()
+    if msg and requested == "cuda":
+        warnings.warn(msg)
     if requested != "auto":
         return requested
     try:
         import torch
 
         if not torch.cuda.is_available():
+            return "cpu"
+        # legacy check for auto path
+        compat = _check_torch_sm_compat()
+        if compat:
+            warnings.warn(compat + " — auto→cpu")
             return "cpu"
         # Prefer pynvml if present, else torch mem query, else assume cpu-safe
         try:
@@ -284,7 +319,7 @@ def train(args):
                         model.save(ckpt)
                     except Exception:
                         pass
-                    print(f"-> checkpoint saved {ckpt}.zip ({i+1}/{args.sessions})")
+                    print(f"-> checkpoint saved {ckpt}.zip ({i + 1}/{args.sessions})")
     except KeyboardInterrupt:
         print("\nInterrupted — saving checkpoint...")
         try:
@@ -296,7 +331,7 @@ def train(args):
     finally:
         # ensure final save even on normal exit (already done) and close env
         try:
-            if 'model' in locals() and model is not None:
+            if "model" in locals() and model is not None:
                 # non-checkpoint final save already done; ensure at least once
                 if not Path(f"{args.model_name}.zip").exists():
                     model.save(args.model_name)

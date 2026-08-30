@@ -46,6 +46,9 @@ sudo apt update && sudo apt install -y libsdl2-2.0-0
 uv sync --extra dev          # or: uv sync (runtime only)
 # If network is slow or GPU has <4GB VRAM, use CPU-only torch:
 # uv sync --no-install-package torch && uv pip install torch --index-url https://download.pytorch.org/whl/cpu
+# Maxwell GTX 960 sm_52 2GB (driver 580) pinned to torch==2.6.0+cu124 (last with sm_50; 2.7+ → sm_75+):
+# uv sync already installs 2.6 → `uv run train.py --device cuda --window null --n-envs 4` just works
+# (auto still picks cpu on <4GB; use --device cuda to force; ~400MiB VRAM, n_envs 4 → 297 fps vs 95)
 
 # Provide ROM and create output dirs
 mkdir -p roms models
@@ -94,11 +97,25 @@ Options `train.py --help` / `scripts/train_segments.sh --help`:
 - `--shaped-alpha 0.1` hybrid `score+α*shaped` (`0.0` legacy sparse, `α=0.1-0.3`), `shaped = -0.5 height +0.75 lines -0.35 holes -0.2 bump`
 - `--learning-rate 1e-4 --clip-range 0.1 --ent-coef 0.01 --gamma 0.95 --batch-size 32` (tuned for dense)
 - `--checkpoint-freq 10` saves `models/tetris_ppo_model.zip` every 10 sessions + `models/tetris_ppo_model_ckpt_0010.zip` …; `0` only at end; `CTRL+C` also saves
-- `--n-envs 1` (`DummyVecEnv`) or `>1` `SubprocVecEnv` for CPU throughput
-- `--tensorboard logs/` → `tensorboard --logdir logs`
-- `--device auto|cpu|cuda` — `auto`→`cpu` on `<4GB VRAM` or `sm_52` (`torch 2.13+cu130` ≥`sm_75`)
+ - `--n-envs 1` (`DummyVecEnv`) or `>1` `SubprocVecEnv` for throughput (CPU or GPU; `n_envs 4` + `cuda` → `297 fps` vs `95 fps` single)
+ - `--tensorboard logs/` → `tensorboard --logdir logs`
+ - `--device auto|cpu|cuda` — `auto`→`cpu` on `<4GB VRAM` or `sm_52` (`torch 2.6.0+cu124` pinned `sm_50`; `2.7+` ≥`sm_75` via `./scripts/setup_legacy_gpu.sh --check`); for this box `uv run train.py --device cuda` works, `~400MiB` VRAM
 
 Checkpoints: `ls -lh models/tetris_ppo_model*.zip` — resume is automatic; mismatched `Mlp→Cnn` starts fresh with warning.
+
+### GPU — Maxwell GTX 960 sm_52 (2GB, driver 580 CUDA 13) now enabled
+
+Pinned `torch==2.6.0+cu124` (`arch sm_50,sm_60,...,sm_90`) is last with `sm_50` (2.7+ `cu128` `sm_75+` → `no kernel image`). `2.6` supports `numpy 2.x`; `uv.lock` now `2.6.0`, `sb3 2.8.0`, `gym 1.2.3` — GPU just works, `~400MiB` VRAM measured.
+
+```bash
+nvidia-smi --query-gpu=name,compute_cap,memory.total --format=csv   # → 5.2, 2048MiB
+./scripts/setup_legacy_gpu.sh --check          # reports torch arch + cap + alloc test
+uv run train.py --device cuda --window null --sessions 1 --steps 2048 --n-envs 4  # 297 fps vs 95 single
+uv run train.py --device cuda --window null --sessions 200 --runs 4 --steps 2048 --n-envs 4 --checkpoint-freq 10
+./scripts/setup_legacy_gpu.sh --revert         # modern GPU: uv pip install torch --upgrade --index-url https://download.pytorch.org/whl/cu130
+```
+
+`auto` still `→cpu` on `<4GB` (`train.py:75`); force `--device cuda`. For modern `sm_75+` you can `uv pip install --upgrade torch --index-url https://download.pytorch.org/whl/cu130` (needs `uv run --no-sync` to keep latest until lock bumped).
 
 ### Window backends (`tetris_env.py:137`)
 

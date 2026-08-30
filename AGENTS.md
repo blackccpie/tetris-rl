@@ -13,8 +13,8 @@ Toy/experimental Tetris RL using PyBoy (Game Boy emulator), Gymnasium, Stable-Ba
 ## Package Management
 - `uv` — no `requirements.txt`; dependencies in `[project.dependencies]` in `pyproject.toml`.
 - `uv sync` to install, `uv run` to execute.
-- PyTorch: `torch>=2.2` (unpinned). Former `<2.3.0` pin for macOS 12 x86_64 (no wheel beyond 2.2) removed; on that platform pin manually via `uv pip install "torch<2.3"` if needed.
-- Ubuntu 24.04: requires `libsdl2-2.0-0` at runtime (`sudo apt install libsdl2-2.0-0`); `libsdl2-dev` only to build PyBoy from sdist. With NVIDIA GPU <4GB VRAM use `--device cpu` (see `train.py`). Large CUDA wheels (~2GB) — on slow link use CPU wheel: `uv pip install torch --index-url https://download.pytorch.org/whl/cpu` after `uv sync --no-install-package torch`.
+- PyTorch: `torch>=2.2,<2.7` (`uv.lock` `2.6.0+cu124` pinned for GTX 960 sm_52; `2.7+` drops `sm_50` → `no kernel image` `sm_75+`). Maxwell GTX 960 sm_52 (2GB, driver 580) now GPU-enabled: `uv run train.py --device cuda --n-envs 4` → `297 fps` vs `95 fps` `n_envs 1` within `~400MiB`; modern GPU: `uv pip install --upgrade torch --index-url https://download.pytorch.org/whl/cu130` (use `uv run --no-sync` until lock bump). Former `<2.3.0` macOS 12 pin removed.
+- Ubuntu 24.04: requires `libsdl2-2.0-0` at runtime (`sudo apt install libsdl2-2.0-0`); `libsdl2-dev` only to build PyBoy from sdist. With NVIDIA GPU <4GB VRAM use `--device cpu` unless legacy GPU path (see `train.py`). Large CUDA wheels (~2GB) — on slow link use CPU wheel: `uv pip install torch --index-url https://download.pytorch.org/whl/cpu` after `uv sync --no-install-package torch`.
 
 ## Code Style (enforced by Ruff)
 - Line length: 120
@@ -32,7 +32,7 @@ Toy/experimental Tetris RL using PyBoy (Game Boy emulator), Gymnasium, Stable-Ba
 - Run: `uv run ruff check . && ruff format --check .` must pass.
 
 ## Entry Points
-- `uv run train.py --device auto|cpu|cuda --window null|SDL2|headless --policy CnnPolicy|MlpPolicy --shaped-alpha 0.1 --sessions 200 --steps 2048` — default `CnnPolicy` `TetrisCNN` `α=0.1` `200×4×2048≈1.6M` (600≈5M 1200≈10M ALE still sparse); `lr 1e-4 clip 0.1 ent 0.01 gamma 0.95 batch 32`; auto→`cpu` on <4GB VRAM (GTX 960) or `sm_52` incompatibility (`torch 2.13+cu130` ≥`sm_75`); handles `Mlp→Cnn` incompatible saved models gracefully; ensures `models/` exists before save; `--tensorboard logs/` `--checkpoint-freq 10` (`0`=only end, `CTRL+C` saves) optional.
+- `uv run train.py --device auto|cpu|cuda --window null|SDL2|headless --policy CnnPolicy|MlpPolicy --shaped-alpha 0.1 --sessions 200 --steps 2048` — default `CnnPolicy` `TetrisCNN` `α=0.1` `200×4×2048≈1.6M` (600≈5M 1200≈10M ALE still sparse); `lr 1e-4 clip 0.1 ent 0.01 gamma 0.95 batch 32`; auto→`cpu` on <4GB VRAM (GTX 960) or `sm_52` incompatibility (`torch 2.13+cu130` ≥`sm_75`); legacy `torch==2.6.0+cu124` via `./scripts/setup_legacy_gpu.sh` then `--device cuda --n-envs 4` → `297 fps` (vs `95` single) within `400MiB`; handles `Mlp→Cnn` incompatible saved models gracefully; ensures `models/` exists before save; `--tensorboard logs/` `--checkpoint-freq 10` (`0`=only end, `CTRL+C` saves) optional.
 - `scripts/train_segments.sh --total 600 --per-segment 60` — Option A segmented resumable (10×500k for 5M), each `uv run train.py --sessions 60` resumes from `models/tetris_ppo_model.zip`; checkpoints `models/tetris_ppo_model_ckpt_*.zip` every `--checkpoint-freq`.
 - `uv run play.py --rom/--init/--model/--window/--device/--deterministic --shaped-alpha 0.1` — must match train `α`; SDL2 warns if no `DISPLAY`/`WAYLAND_DISPLAY` (use `xvfb-run -a`); `null`/`headless` for headless.
 
