@@ -19,6 +19,7 @@ CLIP=0.1
 ENT=0.01
 MODEL="models/tetris_ppo_model"
 DEVICE="cpu"
+N_ENVS=4
 WINDOW="null"
 CHECKPOINT_FREQ=10
 TENSORBOARD=""
@@ -39,6 +40,7 @@ Options:
   --shaped-alpha F   PBRS alpha 0.0 legacy, 0.1 hybrid (default $SHAPED_ALPHA)
   --model PATH       model prefix (default $MODEL)
   --device NAME      auto|cpu|cuda (default $DEVICE)
+  --n-envs N         VecEnv count 1=Dummy >1 Subproc (default $N_ENVS; 4→280 fps cpu, 292 fps cuda)
   --window NAME      null|SDL2|headless (default $WINDOW)
   --checkpoint-freq N save every N sessions (default $CHECKPOINT_FREQ, 0=only end)
   --tensorboard DIR  tensorboard log dir (default none)
@@ -71,6 +73,7 @@ while [[ $# -gt 0 ]]; do
     --shaped-alpha) SHAPED_ALPHA="$2"; shift 2;;
     --model) MODEL="$2"; shift 2;;
     --device) DEVICE="$2"; shift 2;;
+    --n-envs) N_ENVS="$2"; shift 2;;
     --window) WINDOW="$2"; shift 2;;
     --checkpoint-freq) CHECKPOINT_FREQ="$2"; shift 2;;
     --tensorboard) TENSORBOARD="$2"; shift 2;;
@@ -93,7 +96,7 @@ mkdir -p "$(dirname "$MODEL")" logs 2>/dev/null || true
 TOTAL_STEPS=$((TOTAL_SESSIONS * RUNS * STEPS))
 PER_STEPS=$((PER_SEGMENT * RUNS * STEPS))
 echo "=== Train segments: total $TOTAL_SESSIONS sessions ($TOTAL_STEPS steps), $PER_SEGMENT per segment ($PER_STEPS steps) ==="
-echo "Policy $POLICY α=$SHAPED_ALPHA device $DEVICE window $WINDOW checkpoint every $CHECKPOINT_FREQ sessions"
+echo "Policy $POLICY α=$SHAPED_ALPHA device $DEVICE n_envs $N_ENVS window $WINDOW checkpoint every $CHECKPOINT_FREQ sessions"
 echo "Model $MODEL.zip — resumes automatically if exists"
 echo
 
@@ -112,7 +115,7 @@ for (( seg=1; seg<=SEGMENTS; seg++ )); do
     --sessions "$this_seg" --runs "$RUNS" --steps "$STEPS" \
     --policy "$POLICY" --shaped-alpha "$SHAPED_ALPHA" \
     --batch-size "$BATCH_SIZE" --gamma "$GAMMA" --learning-rate "$LR" --clip-range "$CLIP" --ent-coef "$ENT" \
-    --model-name "$MODEL" --device "$DEVICE" --window "$WINDOW" \
+    --model-name "$MODEL" --device "$DEVICE" --n-envs "$N_ENVS" --window "$WINDOW" \
     --checkpoint-freq "$CHECKPOINT_FREQ" "${TB_ARGS[@]}"
 
   echo "--- Segment $seg done — $MODEL.zip updated ---"

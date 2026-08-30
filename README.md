@@ -97,25 +97,30 @@ Options `train.py --help` / `scripts/train_segments.sh --help`:
 - `--shaped-alpha 0.1` hybrid `score+α*shaped` (`0.0` legacy sparse, `α=0.1-0.3`), `shaped = -0.5 height +0.75 lines -0.35 holes -0.2 bump`
 - `--learning-rate 1e-4 --clip-range 0.1 --ent-coef 0.01 --gamma 0.95 --batch-size 32` (tuned for dense)
 - `--checkpoint-freq 10` saves `models/tetris_ppo_model.zip` every 10 sessions + `models/tetris_ppo_model_ckpt_0010.zip` …; `0` only at end; `CTRL+C` also saves
- - `--n-envs 1` (`DummyVecEnv`) or `>1` `SubprocVecEnv` for throughput (CPU or GPU; `n_envs 4` + `cuda` → `297 fps` vs `95 fps` single)
+ - `--n-envs 1` (`DummyVecEnv`) or `>1` `SubprocVecEnv` for throughput — `n_envs 4` `280 fps` `n_envs 8` `371 fps` on this 8-core CPU; `cuda n_envs 8` `423 fps` only ~14% faster (emulator-bound, gpu util 4%)
  - `--tensorboard logs/` → `tensorboard --logdir logs`
- - `--device auto|cpu|cuda` — `auto`→`cpu` on `<4GB VRAM` or `sm_52` (`torch 2.6.0+cu124` pinned `sm_50`; `2.7+` ≥`sm_75` via `./scripts/setup_legacy_gpu.sh --check`); for this box `uv run train.py --device cuda` works, `~400MiB` VRAM
+ - `--device auto|cpu|cuda` — `auto`→`cpu` on `<4GB VRAM`; for `GTX 960` `cuda` works (`torch 2.6.0+cu124` `sm_50`, `~400MiB`) but CPU is recommended on this box (see GPU section)
 
 Checkpoints: `ls -lh models/tetris_ppo_model*.zip` — resume is automatic; mismatched `Mlp→Cnn` starts fresh with warning.
 
-### GPU — Maxwell GTX 960 sm_52 (2GB, driver 580 CUDA 13) now enabled
+### GPU — Maxwell GTX 960 sm_52 (2GB, driver 580 CUDA 13) enabled but CPU is faster
 
-Pinned `torch==2.6.0+cu124` (`arch sm_50,sm_60,...,sm_90`) is last with `sm_50` (2.7+ `cu128` `sm_75+` → `no kernel image`). `2.6` supports `numpy 2.x`; `uv.lock` now `2.6.0`, `sb3 2.8.0`, `gym 1.2.3` — GPU just works, `~400MiB` VRAM measured.
+Pinned `torch==2.6.0+cu124` (`arch sm_50,sm_60,...,sm_90`) is last with `sm_50` (2.7+ `cu128` `sm_75+` → `no kernel image`). GPU *works* (`~400MiB` VRAM, `uv.lock` `2.6.0`/`sb3 2.8.0`) but is **not faster** on this workload — PyBoy emulator is CPU-bound (`500 steps` `145 fps` single `tetris_env.py:161`), PPO `TetrisCNN` is tiny (128-dim, 18×10).
+
+Measured this box (`--runs 2 --steps 2048`, 8 cores, 15Gi RAM):
+`cpu n_envs 1` `82 fps` `n_envs 4` `280 fps` `n_envs 8` `371 fps`
+`cuda n_envs 1` `96 fps` `n_envs 4` `292 fps` `n_envs 8` `423 fps` — GPU only `~4–14%` faster, `gpu util 4–9%` vs `cpu util 20%` idle, so bottleneck is `pyboy.tick()` not `torch` matmul. Recommendation: use **CPU + `n_envs 4–8`** (saves 2GB CUDA download, no VRAM contention with Xorg).
 
 ```bash
 nvidia-smi --query-gpu=name,compute_cap,memory.total --format=csv   # → 5.2, 2048MiB
 ./scripts/setup_legacy_gpu.sh --check          # reports torch arch + cap + alloc test
-uv run train.py --device cuda --window null --sessions 1 --steps 2048 --n-envs 4  # 297 fps vs 95 single
-uv run train.py --device cuda --window null --sessions 200 --runs 4 --steps 2048 --n-envs 4 --checkpoint-freq 10
+uv run train.py --device cpu --window null --n-envs 4 --sessions 200 --runs 4 --steps 2048 --checkpoint-freq 10  # recommended
+uv run train.py --device cuda --window null --n-envs 4 --sessions 200 --runs 4 --steps 2048 --checkpoint-freq 10  # works, ~5–15% faster at n_envs 8
+./scripts/train_segments.sh --device cpu --total 600 --per-segment 60  # segmented; add --device cuda if you want GPU
 ./scripts/setup_legacy_gpu.sh --revert         # modern GPU: uv pip install torch --upgrade --index-url https://download.pytorch.org/whl/cu130
 ```
 
-`auto` still `→cpu` on `<4GB` (`train.py:75`); force `--device cuda`. For modern `sm_75+` you can `uv pip install --upgrade torch --index-url https://download.pytorch.org/whl/cu130` (needs `uv run --no-sync` to keep latest until lock bumped).
+`auto` still `→cpu` on `<4GB` (`train.py:75`); force `--device cuda` to test. For modern `sm_75+` you can `uv pip install --upgrade torch --index-url https://download.pytorch.org/whl/cu130` (needs `uv run --no-sync` until lock bumped).
 
 ### Window backends (`tetris_env.py:137`)
 
