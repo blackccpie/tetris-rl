@@ -41,7 +41,9 @@ class TestParseAction:
         assert parse_action("down") == WindowEvent.PRESS_ARROW_DOWN
 
     def test_up(self):
-        assert parse_action("up") == WindowEvent.PRESS_ARROW_UP
+        # UP removed in 6-action env (was no-op in GB Tetris) — now invalid
+        with pytest.raises(ValueError, match="Invalid action"):
+            parse_action("up")
 
     def test_a(self):
         assert parse_action("a") == WindowEvent.PRESS_BUTTON_A

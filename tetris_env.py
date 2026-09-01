@@ -33,7 +33,6 @@ action_names = {
     WindowEvent.PRESS_ARROW_LEFT: "LEFT",
     WindowEvent.PRESS_ARROW_RIGHT: "RIGHT",
     WindowEvent.PRESS_ARROW_DOWN: "DOWN",
-    WindowEvent.PRESS_ARROW_UP: "UP",
     WindowEvent.PRESS_BUTTON_A: "A",
     WindowEvent.PRESS_BUTTON_B: "B",
     WindowEvent.PASS: "PASS",
@@ -49,8 +48,6 @@ def parse_action(s: str) -> int:
         return WindowEvent.PRESS_ARROW_RIGHT
     elif action == "DOWN":
         return WindowEvent.PRESS_ARROW_DOWN
-    elif action == "UP":
-        return WindowEvent.PRESS_ARROW_UP
     elif action == "A":
         return WindowEvent.PRESS_BUTTON_A
     elif action == "B":
@@ -74,7 +71,7 @@ class tetris_env(Env):  # noqa: N801
         gb_path: str = "",
         init_state: str = "",
         speedup: int = 1,
-        action_freq: int = 24,
+        action_freq: int = 12,
         window: str = "SDL2",
         log_level: str = "ERROR",
         shaped_alpha: float = 0.1,
@@ -87,7 +84,8 @@ class tetris_env(Env):  # noqa: N801
             gb_path (str): Path to the Game Boy ROM file.
             init_state (str): Path to the initial state file.
             speedup (int): Speed multiplier for the emulator.
-            action_freq (int): Frequency of actions in emulator ticks.
+            action_freq (int): Frequency of actions in emulator ticks (12 = finer
+                rotation timing than legacy 24; piece drops slower per decision).
             window (str): Window backend for PyBoy (e.g., "SDL2").
             log_level (str): Logging level (e.g., "ERROR", "DEBUG").
             shaped_alpha (float): PBRS coefficient for dense shaped delta.
@@ -96,9 +94,10 @@ class tetris_env(Env):  # noqa: N801
                 is `get_total_score()` (height/lines/holes/bump).
             shaped_weights (tuple): Optional override for
                 (height, lines, holes, bump) weights. Defaults to
-                (-0.5, 0.75, -0.35, -0.2) — use donnybadamo GA-tuned
-                (-0.54 max_h, +9.9 lines, -9.25 holes, -1.43 bump, +...) via
-                custom wrapper if desired.
+                (-0.5, 0.75, -0.8, -0.35) — stronger hole/bump penalty than
+                legacy (-0.35/-0.2) to encourage rotation; donnybadamo GA
+                (-0.54 max_h, +9.9 lines, -9.25 holes, -1.43 bump) scaled
+                with --shaped-alpha 0.03-0.05 also works via override.
         """
         super().__init__()
 
@@ -123,15 +122,18 @@ class tetris_env(Env):  # noqa: N801
             raise FileNotFoundError(f"Init state not found: {self.init_state}")
         self._closed = False
         self.shaped_alpha = float(shaped_alpha)
-        # (height, completion, holes, bumpiness) weights — BERTsekas/Dellacherie + donny GA
-        self.shaped_weights = shaped_weights if shaped_weights is not None else (-0.5, 0.75, -0.35, -0.2)
+        # (height, completion, holes, bumpiness) — Dellacherie/Bertsekas tuned
+        # to penalize holes/bump harder so rotation is rewarded; legacy (-0.35/-0.2)
+        # under-penalized holes → LEFT/RIGHT/DOWN collapse without spin.
+        self.shaped_weights = shaped_weights if shaped_weights is not None else (-0.5, 0.75, -0.8, -0.35)
         self.prev_shaped: float = 0.0
 
+        # 6 actions — UP removed (no-op in GB Tetris, wasted 14% exploration)
+        # indices: 0 LEFT, 1 RIGHT, 2 DOWN, 3 A (rotate), 4 B (rotate), 5 PASS
         self.valid_actions = [
             WindowEvent.PRESS_ARROW_LEFT,
             WindowEvent.PRESS_ARROW_RIGHT,
             WindowEvent.PRESS_ARROW_DOWN,
-            WindowEvent.PRESS_ARROW_UP,
             WindowEvent.PRESS_BUTTON_A,
             WindowEvent.PRESS_BUTTON_B,
             WindowEvent.PASS,
@@ -141,7 +143,6 @@ class tetris_env(Env):  # noqa: N801
             WindowEvent.RELEASE_ARROW_LEFT,
             WindowEvent.RELEASE_ARROW_RIGHT,
             WindowEvent.RELEASE_ARROW_DOWN,
-            WindowEvent.RELEASE_ARROW_UP,
         ]
 
         self.release_button = [
@@ -390,16 +391,17 @@ class tetris_env(Env):  # noqa: N801
         Perform an input action in the emulator.
 
         Args:
-            action_idx (int): Index of the action (0-6) within valid_actions.
+            action_idx (int): Index of the action (0-5) within valid_actions
+                (0 LEFT, 1 RIGHT, 2 DOWN, 3 A, 4 B, 5 PASS).
         """
         press_event = self.valid_actions[action_idx]
         self.pyboy.send_input(press_event)
         for i in range(self.action_freq):
             if i == 8:
-                if action_idx < 4:
+                if action_idx < 3:
                     self.pyboy.send_input(self.release_arrow[action_idx])
-                elif action_idx < 6:
-                    self.pyboy.send_input(self.release_button[action_idx - 4])
+                elif action_idx < 5:
+                    self.pyboy.send_input(self.release_button[action_idx - 3])
                 elif press_event == WindowEvent.PRESS_BUTTON_START:
                     self.pyboy.send_input(WindowEvent.RELEASE_BUTTON_START)
             self.pyboy.tick()

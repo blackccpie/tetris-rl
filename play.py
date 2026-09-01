@@ -36,7 +36,7 @@ def parse_args():
     parser.add_argument("--init", type=str, default="states/init.state", help="Path to init state.")
     parser.add_argument("--model", type=str, default="models/tetris_ppo_model", help="Model path.")
     parser.add_argument("--speedup", type=int, default=1, help="Emulator speedup (SDL2 only).")
-    parser.add_argument("--freq", type=int, default=24, help="Action frequency.")
+    parser.add_argument("--freq", type=int, default=12, help="Action frequency (must match train, 12 default).")
     parser.add_argument("--runs", type=int, default=4, help="Number of runs.")
     parser.add_argument("--window", type=str, default="SDL2", choices=["null", "SDL2", "headless"])
     parser.add_argument("--shaped-alpha", type=float, default=0.1, help="PBRS alpha (must match train, 0.0 legacy).")

@@ -149,7 +149,7 @@ def parse_args():
     parser.add_argument("--rom", type=str, default="roms/tetris.gb", help="Path to the ROM file.")
     parser.add_argument("--init", type=str, default="states/init.state", help="Path to the initial state.")
     parser.add_argument("--speedup", type=int, default=5, help="Speedup factor.")
-    parser.add_argument("--freq", type=int, default=24, help="Action frequency.")
+    parser.add_argument("--freq", type=int, default=12, help="Action frequency (12 finer rotation than legacy 24).")
     parser.add_argument(
         "--policy",
         type=str,
@@ -171,7 +171,9 @@ def parse_args():
     parser.add_argument("--model-name", type=str, default="models/tetris_ppo_model", help="Model save path.")
     parser.add_argument("--learning-rate", type=float, default=1e-4, help="Adam LR (dense: 1e-4).")
     parser.add_argument("--clip-range", type=float, default=0.1, help="PPO clip (dense: 0.1).")
-    parser.add_argument("--ent-coef", type=float, default=0.01, help="Entropy bonus (dense: 0.01).")
+    parser.add_argument(
+        "--ent-coef", type=float, default=0.02, help="Entropy bonus (0.02 encourages rotation vs 0.01 collapse)."
+    )
     parser.add_argument(
         "--shaped-alpha",
         type=float,
@@ -259,18 +261,38 @@ def train(args):
             if wants_cnn != is_cnn:
                 print(f"-> saved model {loaded_policy} != requested {args.policy}, starting fresh.")
                 model = None
+            elif hasattr(model, "action_space") and model.action_space.n != env.action_space.n:
+                print(
+                    f"-> saved model action_space {model.action_space.n} != env {env.action_space.n} "
+                    f"(7→6 UP removal). Starting fresh — archive old checkpoints with: "
+                    f"mv {args.model_name}.zip {args.model_name}_legacy7.zip"
+                )
+                model = None
             else:
                 print("-> continuing training!")
         except ValueError as e:
-            if "Observation spaces do not match" in str(e) or "features_extractor" in str(e):
+            msg = str(e)
+            if (
+                "Observation spaces do not match" in msg
+                or "features_extractor" in msg
+                or "action_space" in msg
+                or "Discrete" in msg
+            ):
                 print(f"-> saved model incompatible ({e}). Starting fresh training.")
                 model = None
             else:
                 raise
         except Exception as e:
-            # SB3 may raise different error for policy mismatch
-            if "TetrisCNN" in str(e) or "CnnPolicy" in str(e) or "MlpPolicy" in str(e):
-                print(f"-> saved model policy mismatch ({e}). Starting fresh.")
+            msg = str(e)
+            # SB3 may raise different error for policy/action mismatch
+            if (
+                "TetrisCNN" in msg
+                or "CnnPolicy" in msg
+                or "MlpPolicy" in msg
+                or "action_space" in msg
+                or "Discrete" in msg
+            ):
+                print(f"-> saved model policy/action mismatch ({e}). Starting fresh.")
                 model = None
             else:
                 raise
