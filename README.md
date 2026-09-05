@@ -78,6 +78,16 @@ xvfb-run -a uv run play.py --window null
 # or: SDL_VIDEODRIVER=dummy uv run train.py --window null
 ```
 
+### Deterministic vs stochastic — why rotation can appear missing (`play.py:44`)
+
+`--deterministic` (default `true`) always picks the highest-probability action (`argmax`); `--no-deterministic` samples from the learned distribution. Early checkpoints often learn `DOWN/LEFT/RIGHT` as `argmax` while `A/B` (rotate) stays at `10–15%` probability — e.g. `8k`-step `det {DOWN 203 LEFT124 RIGHT173 rot0/500}` vs `stoch {A/B 97/500 19%}`. This looks like “no rotation” in `deterministic` view but rotation *is* explored stochastically.
+
+* To **see** rotation on early/in-progress models: `uv run play.py --no-deterministic --freq 12 --shaped-alpha 0.1` (also Colab cell 6 shows both histograms)
+* For final evaluation after `500k–5M` steps where `A/B` becomes `argmax`: `deterministic` will then show spins; keep `stochastic` only to diagnose collapse (if `stoch` `A/B <5%` you need longer training or higher `--ent-coef 0.02` `freq12`)
+
+Early collapse was also caused by `7→6` `UP` removal + stronger hole penalty (`-0.35→-0.8` `tetris_env.py:128`); old `7`-action / `ent 0.01` checkpoints need `rm models/tetris_ppo_model*.zip` to train fresh with `ent 0.02` ( `train.py:253` `PPO.load` keeps old hyper-params on resume).
+```
+
 ### Long training — segmented & resumable (Option A)
 
 CPU `1.6M ≈ 3-4h`, `5M ≈ 10h` at `~130 fps` `window="null"`. Split into segments — each resumes from `models/tetris_ppo_model.zip` (`train.py:215` `PPO.load` + `TetrisCNN` `custom_objects`):
