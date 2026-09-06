@@ -52,7 +52,9 @@ class TestParseAction:
         assert parse_action("b") == WindowEvent.PRESS_BUTTON_B
 
     def test_pass(self):
-        assert parse_action("pass") == WindowEvent.PASS
+        # PASS removed in 5-action env (let pieces fall centrally without moving) — now invalid
+        with pytest.raises(ValueError, match="Invalid action"):
+            parse_action("pass")
 
     def test_start(self):
         assert parse_action("start") == WindowEvent.PRESS_BUTTON_START

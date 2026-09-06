@@ -149,7 +149,9 @@ def parse_args():
     parser.add_argument("--rom", type=str, default="roms/tetris.gb", help="Path to the ROM file.")
     parser.add_argument("--init", type=str, default="states/init.state", help="Path to the initial state.")
     parser.add_argument("--speedup", type=int, default=5, help="Speedup factor.")
-    parser.add_argument("--freq", type=int, default=12, help="Action frequency (12 finer rotation than legacy 24).")
+    parser.add_argument(
+        "--freq", type=int, default=8, help="Action frequency (8 finer lateral before lock than legacy 24/12)."
+    )
     parser.add_argument(
         "--policy",
         type=str,
@@ -172,7 +174,10 @@ def parse_args():
     parser.add_argument("--learning-rate", type=float, default=1e-4, help="Adam LR (dense: 1e-4).")
     parser.add_argument("--clip-range", type=float, default=0.1, help="PPO clip (dense: 0.1).")
     parser.add_argument(
-        "--ent-coef", type=float, default=0.02, help="Entropy bonus (0.02 encourages rotation vs 0.01 collapse)."
+        "--ent-coef",
+        type=float,
+        default=0.03,
+        help="Entropy bonus (0.03 spreads early pieces vs 0.02/0.01 DOWN collapse).",
     )
     parser.add_argument(
         "--shaped-alpha",
@@ -264,8 +269,8 @@ def train(args):
             elif hasattr(model, "action_space") and model.action_space.n != env.action_space.n:
                 print(
                     f"-> saved model action_space {model.action_space.n} != env {env.action_space.n} "
-                    f"(7→6 UP removal). Starting fresh — archive old checkpoints with: "
-                    f"mv {args.model_name}.zip {args.model_name}_legacy7.zip"
+                    f"(5 actions LEFT/RIGHT/DOWN/A/B; UP/PASS removed). Starting fresh — archive old "
+                    f"with: mv {args.model_name}.zip {args.model_name}_legacy{model.action_space.n}.zip"
                 )
                 model = None
             else:

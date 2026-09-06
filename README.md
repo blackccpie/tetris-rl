@@ -65,14 +65,14 @@ uv run pytest tests/ -v          # headless, uses window="null"
 uv run ruff check . && uv run ruff format --check .
 
 uv run train.py --help           # trains PPO; saves to models/tetris_ppo_model.zip
-# defaults: CnnPolicy TetrisCNN α=0.1 200×4×2048≈1.6M (600≈5M 1200≈10M) lr 1e-4 clip 0.1 ent 0.02 gamma 0.95 batch 32 freq 12
+# defaults: CnnPolicy TetrisCNN α=0.1 200×4×2048≈1.6M (600≈5M 1200≈10M) lr 1e-4 clip 0.1 ent 0.03 gamma 0.95 batch 32 freq 8
 uv run train.py --device cpu --window null --policy CnnPolicy --shaped-alpha 0.1 --sessions 200 --steps 2048
 uv run train.py --device cpu --policy MlpPolicy --shaped-alpha 0.0 --sessions 40  # legacy pure score (sparse)
 # tensorboard: uv run train.py --tensorboard logs/
 uv run train.py --device cpu     # auto→cpu on <4GB VRAM (e.g. GTX 960 2GB) or sm_52 incompat
 
 uv run play.py --help            # loads model and plays with SDL2 window
-uv run play.py --window null --shaped-alpha 0.1 --freq 12 --device cpu --model models/tetris_ppo_model
+uv run play.py --window null --shaped-alpha 0.1 --freq 8 --device cpu --model models/tetris_ppo_model
 # headless / CI (no DISPLAY):
 xvfb-run -a uv run play.py --window null
 # or: SDL_VIDEODRIVER=dummy uv run train.py --window null
@@ -80,12 +80,12 @@ xvfb-run -a uv run play.py --window null
 
 ### Deterministic vs stochastic — why rotation can appear missing (`play.py:44`)
 
-`--deterministic` (default `true`) always picks the highest-probability action (`argmax`); `--no-deterministic` samples from the learned distribution. Early checkpoints often learn `DOWN/LEFT/RIGHT` as `argmax` while `A/B` (rotate) stays at `10–15%` probability — e.g. `8k`-step `det {DOWN 203 LEFT124 RIGHT173 rot0/500}` vs `stoch {A/B 97/500 19%}`. This looks like “no rotation” in `deterministic` view but rotation *is* explored stochastically.
+`--deterministic` (default `true`) always picks the highest-probability action (`argmax`); `--no-deterministic` samples from the learned distribution. Early checkpoints often learn `DOWN/LEFT/RIGHT` as `argmax` while `A/B` (rotate) stays at `10–15%` probability — e.g. `8k`-step `det {DOWN 203 LEFT124 RIGHT173 rot0/500}` vs `stoch {A/B 97/500 19%}`. This looks like “no rotation” in `deterministic` view but rotation *is* explored stochastically. Early `PASS` also let pieces fall centrally without moving (now removed).
 
-* To **see** rotation on early/in-progress models: `uv run play.py --no-deterministic --freq 12 --shaped-alpha 0.1` (also Colab cell 6 shows both histograms)
-* For final evaluation after `500k–5M` steps where `A/B` becomes `argmax`: `deterministic` will then show spins; keep `stochastic` only to diagnose collapse (if `stoch` `A/B <5%` you need longer training or higher `--ent-coef 0.02` `freq12`)
+* To **see** rotation on early/in-progress models: `uv run play.py --no-deterministic --freq 8 --shaped-alpha 0.1` (also Colab cell 6 shows both histograms)
+* For final evaluation after `500k–5M` steps where `A/B` becomes `argmax`: `deterministic` will then show spins; keep `stochastic` only to diagnose collapse (if `stoch` `A/B <5%` you need longer training or higher `--ent-coef 0.03` `freq8`)
 
-Early collapse was also caused by `7→6` `UP` removal + stronger hole penalty (`-0.35→-0.8` `tetris_env.py:128`); old `7`-action / `ent 0.01` checkpoints need `rm models/tetris_ppo_model*.zip` to train fresh with `ent 0.02` ( `train.py:253` `PPO.load` keeps old hyper-params on resume).
+Early collapse was also caused by `7→6→5` `UP/PASS` removal + stronger bump (`-0.35→-0.5`) + hole (`-0.35→-0.8` `tetris_env.py:128`); old `7`-action / `6`-action / `ent 0.01` checkpoints need `rm models/tetris_ppo_model*.zip` to train fresh with `ent 0.03` (`train.py:253` `PPO.load` keeps old hyper-params on resume).
 ```
 
 ### Long training — segmented & resumable (Option A)
@@ -104,14 +104,14 @@ uv run train.py --sessions 200 --runs 4 --steps 2048 --checkpoint-freq 10 --poli
 Options `train.py --help` / `scripts/train_segments.sh --help`:
 - `--sessions N`, `--runs N`, `--steps N` → total steps `sessions×runs×steps` (`×n_envs` if `>1`)
 - `--policy CnnPolicy|MlpPolicy` — `CnnPolicy` `TetrisCNN` `3×3` for `18×10` (NatureCNN too large), `Mlp` fallback
-- `--shaped-alpha 0.1` hybrid `score+α*shaped` (`0.0` legacy sparse, `α=0.1-0.3`), `shaped = -0.5 height +0.75 lines -0.8 holes -0.35 bump` (holes/bump ↑ to reward rotation)
-- `--freq 12` ticks per action (finer rotation than legacy 24) — must match train & play
-- `--learning-rate 1e-4 --clip-range 0.1 --ent-coef 0.02 --gamma 0.95 --batch-size 32` (ent 0.02 prevents LEFT/RIGHT/DOWN collapse without spin)
+- `--shaped-alpha 0.1` hybrid `score+α*shaped` (`0.0` legacy sparse, `α=0.1-0.3`), `shaped = -0.5 height +0.75 lines -0.8 holes -0.5 bump` (bump ↑ spreads first pieces)
+- `--freq 8` ticks per action (finer lateral before lock than legacy 24/12) — must match train & play
+- `--learning-rate 1e-4 --clip-range 0.1 --ent-coef 0.03 --gamma 0.95 --batch-size 32` (ent 0.03 spreads first pieces vs 0.02/0.01 DOWN collapse)
 - `--checkpoint-freq 10` saves `models/tetris_ppo_model.zip` every 10 sessions + `models/tetris_ppo_model_ckpt_0010.zip` …; `0` only at end; `CTRL+C` also saves
  - `--n-envs 1` (`DummyVecEnv`) or `>1` `SubprocVecEnv` for throughput — `n_envs 4` `280 fps` `n_envs 8` `371 fps` on this 8-core CPU; `cuda n_envs 8` `423 fps` only ~14% faster (emulator-bound, gpu util 4%)
  - `--tensorboard logs/` → `tensorboard --logdir logs`
  - `--device auto|cpu|cuda` — `auto`→`cpu` on `<4GB VRAM`; for `GTX 960` `cuda` works (`torch 2.6.0+cu124` `sm_50`, `~400MiB`) but CPU is recommended on this box (see GPU section)
-- Actions `6` (`tetris_env.py:130`): `LEFT/RIGHT/DOWN/A/B/PASS` — `UP` removed (no-op in GB Tetris, wasted 14% exploration; old 7-action zips auto-start fresh)
+- Actions `5` (`tetris_env.py:130`): `LEFT/RIGHT/DOWN/A/B` — `UP/PASS` removed (UP no-op wasted 14%, PASS let first pieces stack centrally; old 7/6-action zips auto-start fresh)
 
 Checkpoints: `ls -lh models/tetris_ppo_model*.zip` — resume is automatic; mismatched `Mlp→Cnn` or `7→6` actions starts fresh with warning (`models/archive7/` has legacy 7-action zips).
 
