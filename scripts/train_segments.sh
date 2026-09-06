@@ -16,7 +16,8 @@ BATCH_SIZE=32
 GAMMA=0.95
 LR=1e-4
 CLIP=0.1
-ENT=0.01
+ENT=0.03
+FREQ=8
 MODEL="models/tetris_ppo_model"
 DEVICE="cpu"
 N_ENVS=4
@@ -41,6 +42,7 @@ Options:
   --model PATH       model prefix (default $MODEL)
   --device NAME      auto|cpu|cuda (default $DEVICE)
   --n-envs N         VecEnv count 1=Dummy >1 Subproc (default $N_ENVS; 4→280 fps cpu, 292 fps cuda)
+  --freq N           action frequency ticks per action (default $FREQ; 8 spreads first pieces)
   --window NAME      null|SDL2|headless (default $WINDOW)
   --checkpoint-freq N save every N sessions (default $CHECKPOINT_FREQ, 0=only end)
   --tensorboard DIR  tensorboard log dir (default none)
@@ -74,6 +76,7 @@ while [[ $# -gt 0 ]]; do
     --model) MODEL="$2"; shift 2;;
     --device) DEVICE="$2"; shift 2;;
     --n-envs) N_ENVS="$2"; shift 2;;
+    --freq) FREQ="$2"; shift 2;;
     --window) WINDOW="$2"; shift 2;;
     --checkpoint-freq) CHECKPOINT_FREQ="$2"; shift 2;;
     --tensorboard) TENSORBOARD="$2"; shift 2;;
@@ -96,8 +99,8 @@ mkdir -p "$(dirname "$MODEL")" logs 2>/dev/null || true
 TOTAL_STEPS=$((TOTAL_SESSIONS * RUNS * STEPS))
 PER_STEPS=$((PER_SEGMENT * RUNS * STEPS))
 echo "=== Train segments: total $TOTAL_SESSIONS sessions ($TOTAL_STEPS steps), $PER_SEGMENT per segment ($PER_STEPS steps) ==="
-echo "Policy $POLICY α=$SHAPED_ALPHA device $DEVICE n_envs $N_ENVS window $WINDOW checkpoint every $CHECKPOINT_FREQ sessions"
-echo "Model $MODEL.zip — resumes automatically if exists"
+echo "Policy $POLICY α=$SHAPED_ALPHA ent=$ENT freq=$FREQ device $DEVICE n_envs $N_ENVS window $WINDOW checkpoint every $CHECKPOINT_FREQ sessions"
+echo "Model $MODEL.zip — resumes automatically if exists (5 actions LEFT/RIGHT/DOWN/A/B; old 7/6-act auto-starts fresh)"
 echo
 
 SEGMENTS=$(( (TOTAL_SESSIONS + PER_SEGMENT - 1) / PER_SEGMENT ))
@@ -114,20 +117,20 @@ for (( seg=1; seg<=SEGMENTS; seg++ )); do
   uv run train.py \
     --sessions "$this_seg" --runs "$RUNS" --steps "$STEPS" \
     --policy "$POLICY" --shaped-alpha "$SHAPED_ALPHA" \
-    --batch-size "$BATCH_SIZE" --gamma "$GAMMA" --learning-rate "$LR" --clip-range "$CLIP" --ent-coef "$ENT" \
+    --batch-size "$BATCH_SIZE" --gamma "$GAMMA" --learning-rate "$LR" --clip-range "$CLIP" --ent-coef "$ENT" --freq "$FREQ" \
     --model-name "$MODEL" --device "$DEVICE" --n-envs "$N_ENVS" --window "$WINDOW" \
     --checkpoint-freq "$CHECKPOINT_FREQ" "${TB_ARGS[@]}"
 
   echo "--- Segment $seg done — $MODEL.zip updated ---"
-  # quick eval every segment
+  # quick eval every segment (match train freq/alpha)
   if [[ -f "${MODEL}.zip" ]]; then
-    echo "Eval 2 runs (headless):"
-    uv run play.py --window null --runs 2 --device "$DEVICE" --model "$MODEL" --shaped-alpha "$SHAPED_ALPHA" 2>&1 | tail -5 || true
+    echo "Eval 2 runs (headless, freq $FREQ):"
+    uv run play.py --window null --runs 2 --freq "$FREQ" --device "$DEVICE" --model "$MODEL" --shaped-alpha "$SHAPED_ALPHA" 2>&1 | tail -5 || true
   fi
 done
 
 echo
-echo "All segments done. Final model: $MODEL.zip"
+echo "All segments done. Final model: $MODEL.zip (freq $FREQ ent $ENT 5 actions)"
 ls -lh "${MODEL}.zip" "${MODEL}"_ckpt_*.zip 2>/dev/null | tail -20 || ls -lh "${MODEL}.zip"
 echo "Resume: re-run same command — train.py loads $MODEL.zip and continues"
-echo "Play: uv run play.py --window SDL2 --model $MODEL --shaped-alpha $SHAPED_ALPHA"
+echo "Play: uv run play.py --window SDL2 --freq $FREQ --model $MODEL --shaped-alpha $SHAPED_ALPHA"
