@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # train_segments.sh — Option A: split long CPU training into resumable segments
-# Resumes automatically from models/tetris_ppo_model.zip (train.py PPO.load)
+# Resumes automatically from models_robust/tetris_ppo_next.zip (train.py PPO.load)
 # Each segment saves every --checkpoint-freq sessions and on CTRL+C.
 
 set -euo pipefail

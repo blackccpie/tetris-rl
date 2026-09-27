@@ -34,7 +34,7 @@ def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--rom", type=str, default="roms/tetris.gb", help="Path to ROM.")
     parser.add_argument("--init", type=str, default="states/init.state", help="Path to init state.")
-    parser.add_argument("--model", type=str, default="models/tetris_ppo_model", help="Model path.")
+    parser.add_argument("--model", type=str, default="models_robust/tetris_ppo_next", help="Model path.")
     parser.add_argument("--speedup", type=int, default=1, help="Emulator speedup (SDL2 only).")
     parser.add_argument("--freq", type=int, default=8, help="Action frequency (must match train, 8 default).")
     parser.add_argument("--runs", type=int, default=4, help="Number of runs.")

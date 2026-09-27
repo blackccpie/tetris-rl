@@ -474,7 +474,7 @@ def train(args):
     # Resumable segmented training — saves every checkpoint_freq sessions
     # so you can run long CPU trainings as multiple short segments:
     #   uv run train.py --sessions 50  # segment 1 (50×4×2048≈400k)
-    #   uv run train.py --sessions 50  # segment 2 resumes from models/tetris_ppo_model.zip
+    #   uv run train.py --sessions 50  # segment 2 resumes from models_robust/tetris_ppo_next.zip
     # For a single 5M run split into 10×500k, just run 10 times or use checkpoint-freq.
     checkpoint_freq = int(args.checkpoint_freq)
     Path(args.model_name).parent.mkdir(parents=True, exist_ok=True)
@@ -490,7 +490,7 @@ def train(args):
             if is_checkpoint or is_last:
                 model.save(args.model_name)
                 if is_checkpoint and not is_last:
-                    # also keep numbered copy for rollback: models/tetris_ppo_model_ckpt_10.zip
+                    # also keep numbered copy for rollback: models_robust/tetris_ppo_next_ckpt_0010.zip
                     ckpt = f"{args.model_name}_ckpt_{(i + 1):04d}"
                     try:
                         model.save(ckpt)

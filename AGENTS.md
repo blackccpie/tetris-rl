@@ -34,7 +34,7 @@ Toy/experimental Tetris RL using PyBoy (Game Boy emulator), Gymnasium, Stable-Ba
 
 ## Entry Points
 - `uv run train.py --device auto|cpu|cuda --window null|SDL2|headless --policy MultiInputPolicy --obs-mode enriched --shaped-alpha 0.1 --sessions 200 --steps 2048 --freq 8` — robust worktree defaults: enriched Dict obs, `models_robust/tetris_ppo_next`, `lr 1e-4 linear clip 0.1 gae 0.95 vf 0.5 clip-vf 0.2 kl 0.02 ent 0.03 gamma 0.95 batch 32`; `--obs-mode board --policy CnnPolicy` for ablation; old Box/Cnn/Mlp + `7→6→5` zips auto-start fresh; `--eval-freq 20000` best-model + `--tensorboard` optional (graceful if missing).
-- `scripts/train_segments.sh --total 600 --per-segment 60 --n-envs 4` — Option A segmented resumable (10×500k for 5M), each `uv run train.py --sessions 60 --n-envs 4` resumes from `models/tetris_ppo_model.zip`; checkpoints `models/tetris_ppo_model_ckpt_*.zip` every `--checkpoint-freq`.
+- `scripts/train_segments.sh --total 600 --per-segment 60 --n-envs 4` — Option A segmented resumable (10×500k for 5M), each `uv run train.py --sessions 60 --n-envs 4` resumes from `models_robust/tetris_ppo_next.zip`; checkpoints `models_robust/tetris_ppo_next_ckpt_*.zip` every `--checkpoint-freq`.
 - `uv run play.py --rom/--init/--model/--window/--device/--deterministic --shaped-alpha 0.1 --freq 8` — must match train `α` and `freq`; SDL2 warns if no `DISPLAY`/`WAYLAND_DISPLAY` (use `xvfb-run -a`); `null`/`headless` for headless. `--deterministic` `true` = `argmax` (hides `A/B` early), `--no-deterministic` samples — use latter to diagnose rotation on `8k`-step `det 0%` vs `stoch 19%` checkpoints (see `README.md` Deterministic vs stochastic).
 
 ## Key Files
