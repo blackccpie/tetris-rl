@@ -72,6 +72,55 @@ class TetrisCNN(BaseFeaturesExtractor):
         return self.linear(self.cnn(observations))
 
 
+class TetrisMultiInput(BaseFeaturesExtractor):
+    """Multi-input extractor for enriched Dict obs: board CNN + pieces + features.
+
+    board (18,10) uint8 → TetrisCNN 128-dim; next(7)+current(7) → 32-dim;
+    features(14) → 32-dim; concat 192 → 128-dim ReLU.
+    """
+
+    def __init__(self, observation_space, features_dim: int = 128):
+        super().__init__(observation_space, features_dim)
+        board_space = observation_space.spaces["board"]
+        n_input_channels = 1
+        self.cnn = th.nn.Sequential(
+            th.nn.Conv2d(n_input_channels, 32, kernel_size=3, stride=1, padding=1),
+            th.nn.ReLU(),
+            th.nn.Conv2d(32, 64, kernel_size=3, stride=1, padding=1),
+            th.nn.ReLU(),
+            th.nn.Flatten(),
+        )
+        with th.no_grad():
+            sample = th.as_tensor(board_space.sample()[None]).float()
+            if sample.ndim == 3:
+                sample = sample.unsqueeze(1)
+            n_flatten = self.cnn(sample / 8.0).shape[1]
+        self.board_fc = th.nn.Sequential(th.nn.Linear(n_flatten, 128), th.nn.ReLU())
+        self.piece_fc = th.nn.Sequential(th.nn.Linear(14, 32), th.nn.ReLU())
+        self.feat_fc = th.nn.Sequential(th.nn.Linear(14, 32), th.nn.ReLU())
+        self.out = th.nn.Sequential(th.nn.Linear(192, features_dim), th.nn.ReLU())
+
+    def forward(self, observations) -> th.Tensor:
+        board = observations["board"]
+        if board.ndim == 3:
+            board = board.unsqueeze(1)
+        board = board.float() / 8.0
+        b = self.board_fc(self.cnn(board))
+        pieces = th.cat([observations["next"].float(), observations["current"].float()], dim=1)
+        p = self.piece_fc(pieces)
+        f = self.feat_fc(observations["features"].float())
+        return self.out(th.cat([b, p, f], dim=1))
+
+
+def linear_schedule(initial: float):
+    """Linear LR/clip decay to ~0 over training (SB3 callable schedule)."""
+
+    def _fn(progress_remaining: float) -> float:
+        return max(initial * progress_remaining, 1e-6)
+
+    return _fn
+
+
 def _check_torch_sm_compat() -> str | None:
     """Return warning if current torch cannot run on this GPU (sm_52 vs sm_75+)."""
     try:
@@ -155,13 +204,39 @@ def parse_args():
     parser.add_argument(
         "--policy",
         type=str,
-        default="CnnPolicy",
-        choices=["CnnPolicy", "MlpPolicy"],
-        help="SB3 policy — CnnPolicy (TetrisCNN 18×10) recommended per 2024-25 Tetris RL (CNN>MLP).",
+        default="MultiInputPolicy",
+        choices=["MultiInputPolicy", "CnnPolicy", "MlpPolicy"],
+        help="SB3 policy — MultiInputPolicy (enriched Dict, default) or CnnPolicy/MlpPolicy (board only).",
+    )
+    parser.add_argument(
+        "--obs-mode",
+        type=str,
+        default="enriched",
+        choices=["enriched", "board"],
+        help="Observation: enriched Dict (board+next+current+features) or board Box (ablation).",
     )
     parser.add_argument("--batch-size", type=int, default=32, help="Batch size (dense reward: 32).")
     parser.add_argument("--epochs", type=int, default=10, help="Number of epochs.")
     parser.add_argument("--gamma", type=float, default=0.95, help="Discount (dense: 0.95, sparse: 0.99).")
+    parser.add_argument("--gae-lambda", type=float, default=0.95, help="GAE lambda (0.9-0.95 robust).")
+    parser.add_argument("--vf-coef", type=float, default=0.5, help="Value loss coef (lower if value dominates).")
+    parser.add_argument(
+        "--clip-range-vf", type=float, default=0.2, help="Value clip (0.2 robust; 0 disables: --clip-range-vf 0)."
+    )
+    parser.add_argument("--max-grad-norm", type=float, default=0.5, help="Gradient clipping (SB3 default).")
+    parser.add_argument("--target-kl", type=float, default=0.02, help="Early-stop PPO epochs if KL exceeds.")
+    parser.add_argument(
+        "--normalize-advantage",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Normalize advantages per minibatch (robust default true).",
+    )
+    parser.add_argument(
+        "--lr-schedule", type=str, default="linear", choices=["linear", "constant"], help="LR decay schedule."
+    )
+    parser.add_argument(
+        "--clip-schedule", type=str, default="constant", choices=["linear", "constant"], help="Clip decay schedule."
+    )
     parser.add_argument("--steps", type=int, default=2048, help="n_steps per rollout.")
     parser.add_argument(
         "--sessions",
@@ -170,7 +245,9 @@ def parse_args():
         help="Training sessions (200×4×2048≈1.6M steps, 600≈5M, 1200≈10M — ALE 10M still sparse).",
     )
     parser.add_argument("--runs", type=int, default=4, help="Runs per session.")
-    parser.add_argument("--model-name", type=str, default="models/tetris_ppo_model", help="Model save path.")
+    parser.add_argument(
+        "--model-name", type=str, default="models_robust/tetris_ppo_next", help="Model save path (robust worktree)."
+    )
     parser.add_argument("--learning-rate", type=float, default=1e-4, help="Adam LR (dense: 1e-4).")
     parser.add_argument("--clip-range", type=float, default=0.1, help="PPO clip (dense: 0.1).")
     parser.add_argument(
@@ -187,6 +264,17 @@ def parse_args():
     )
     parser.add_argument("--n-envs", type=int, default=1, help="VecEnv count (1=Dummy, >1 Subproc).")
     parser.add_argument("--tensorboard", type=str, default=None, help="TensorBoard log dir.")
+    parser.add_argument("--seed", type=int, default=0, help="RNG seed (0=randomized noops only).")
+    parser.add_argument("--max-steps", type=int, default=10000, help="Env truncation steps (0=disabled).")
+    parser.add_argument("--noop-max", type=int, default=30, help="Random no-op ticks on reset [0, N].")
+    parser.add_argument("--eval-freq", type=int, default=0, help="Eval every N timesteps (0=disabled).")
+    parser.add_argument("--eval-episodes", type=int, default=5, help="Eval episodes per EvalCallback.")
+    parser.add_argument(
+        "--best-model-save",
+        type=str,
+        default=None,
+        help="Best-model dir for EvalCallback (default <model-name>_best).",
+    )
     parser.add_argument(
         "--checkpoint-freq",
         type=int,
@@ -214,26 +302,10 @@ def train(args):
     device = _resolve_device(args.device)
     if device != args.device:
         print(f"-> device auto-resolved to '{device}' (requested '{args.device}')")
+
     # VecEnv for throughput — SB3 docs: SubprocVecEnv for CPU PPO
-    if args.n_envs > 1:
-        from stable_baselines3.common.env_util import make_vec_env
-        from stable_baselines3.common.vec_env import SubprocVecEnv
-
-        def _make_env():
-            return tetris_env(
-                gb_path=args.rom,
-                action_freq=args.freq,
-                speedup=args.speedup,
-                init_state=args.init,
-                log_level=args.log_level,
-                window=args.window,
-                shaped_alpha=args.shaped_alpha,
-            )
-
-        env = make_vec_env(_make_env, n_envs=args.n_envs, vec_env_cls=SubprocVecEnv)
-        # PPO n_steps is per-env, total = n_steps * n_envs
-    else:
-        env = tetris_env(
+    def _make_single_env():
+        return tetris_env(
             gb_path=args.rom,
             action_freq=args.freq,
             speedup=args.speedup,
@@ -241,11 +313,23 @@ def train(args):
             log_level=args.log_level,
             window=args.window,
             shaped_alpha=args.shaped_alpha,
+            obs_mode=args.obs_mode,
+            max_steps=args.max_steps,
+            noop_max=args.noop_max,
         )
+
+    if args.n_envs > 1:
+        from stable_baselines3.common.env_util import make_vec_env
+        from stable_baselines3.common.vec_env import SubprocVecEnv
+
+        env = make_vec_env(_make_single_env, n_envs=args.n_envs, vec_env_cls=SubprocVecEnv)
+        # PPO n_steps is per-env, total = n_steps * n_envs
+    else:
+        env = _make_single_env()
 
     verbose = 1 if args.log_stdout else 0
 
-    # Policy kwargs for CnnPolicy — TetrisCNN small for 18×10 vs Nature 84×84
+    # Policy kwargs — TetrisCNN for board, TetrisMultiInput for enriched Dict
     policy_kwargs = None
     if args.policy == "CnnPolicy":
         policy_kwargs = dict(
@@ -253,8 +337,45 @@ def train(args):
             features_extractor_kwargs=dict(features_dim=128),
             normalize_images=False,  # we already /8 in extractor
         )
+    elif args.policy == "MultiInputPolicy":
+        policy_kwargs = dict(
+            features_extractor_class=TetrisMultiInput,
+            features_extractor_kwargs=dict(features_dim=128),
+            normalize_images=False,
+        )
+    if args.obs_mode == "enriched" and args.policy != "MultiInputPolicy":
+        print(f"-> obs_mode enriched needs MultiInputPolicy, got {args.policy}; switching to MultiInputPolicy.")
+        args.policy = "MultiInputPolicy"
+        policy_kwargs = dict(
+            features_extractor_class=TetrisMultiInput,
+            features_extractor_kwargs=dict(features_dim=128),
+            normalize_images=False,
+        )
+    if args.obs_mode == "board" and args.policy == "MultiInputPolicy":
+        print("-> obs_mode board with MultiInputPolicy is invalid; switching to CnnPolicy.")
+        args.policy = "CnnPolicy"
+        policy_kwargs = dict(
+            features_extractor_class=TetrisCNN,
+            features_extractor_kwargs=dict(features_dim=128),
+            normalize_images=False,
+        )
 
-    custom_objects = {"TetrisCNN": TetrisCNN}
+    # PPO loss schedules — linear decay stabilizes late training
+    lr = linear_schedule(args.learning_rate) if args.lr_schedule == "linear" else args.learning_rate
+    clip = linear_schedule(args.clip_range) if args.clip_schedule == "linear" else args.clip_range
+    clip_vf = None if args.clip_range_vf == 0 else args.clip_range_vf
+    target_kl = None if args.target_kl == 0 else args.target_kl
+    tb_log = args.tensorboard
+    if tb_log:
+        try:
+            import tensorboard  # noqa: F401
+
+            Path(tb_log).mkdir(parents=True, exist_ok=True)
+        except ImportError:
+            print("-> tensorboard not installed, disabling tb logging.")
+            tb_log = None
+
+    custom_objects = {"TetrisCNN": TetrisCNN, "TetrisMultiInput": TetrisMultiInput}
     if os.path.exists(f"{args.model_name}.zip"):
         try:
             model = PPO.load(args.model_name, env=env, device=device, custom_objects=custom_objects)
@@ -292,12 +413,15 @@ def train(args):
             # SB3 may raise different error for policy/action mismatch
             if (
                 "TetrisCNN" in msg
+                or "TetrisMultiInput" in msg
                 or "CnnPolicy" in msg
                 or "MlpPolicy" in msg
+                or "MultiInputPolicy" in msg
                 or "action_space" in msg
                 or "Discrete" in msg
+                or "Dict" in msg
             ):
-                print(f"-> saved model policy/action mismatch ({e}). Starting fresh.")
+                print(f"-> saved model policy/obs/action mismatch ({e}). Starting fresh.")
                 model = None
             else:
                 raise
@@ -313,13 +437,39 @@ def train(args):
             batch_size=args.batch_size,
             n_epochs=args.epochs,
             gamma=args.gamma,
-            learning_rate=args.learning_rate,
-            clip_range=args.clip_range,
+            gae_lambda=args.gae_lambda,
+            learning_rate=lr,
+            clip_range=clip,
+            clip_range_vf=clip_vf,
+            normalize_advantage=args.normalize_advantage,
             ent_coef=args.ent_coef,
+            vf_coef=args.vf_coef,
+            max_grad_norm=args.max_grad_norm,
+            target_kl=target_kl,
             device=device,
             policy_kwargs=policy_kwargs,
-            tensorboard_log=args.tensorboard,
+            tensorboard_log=tb_log,
+            seed=args.seed if args.seed != 0 else None,
         )
+
+    # Optional EvalCallback — best-model tracking for robustness
+    eval_callback = None
+    if int(args.eval_freq) > 0:
+        from stable_baselines3.common.callbacks import EvalCallback
+        from stable_baselines3.common.vec_env import DummyVecEnv
+
+        best_dir = args.best_model_save or f"{args.model_name}_best"
+        Path(best_dir).mkdir(parents=True, exist_ok=True)
+        eval_env = DummyVecEnv([_make_single_env])
+        eval_callback = EvalCallback(
+            eval_env,
+            best_model_save_path=best_dir,
+            eval_freq=int(args.eval_freq),
+            n_eval_episodes=int(args.eval_episodes),
+            deterministic=True,
+            verbose=1,
+        )
+        print(f"-> EvalCallback every {args.eval_freq} steps, best → {best_dir}/best_model.zip")
 
     # Resumable segmented training — saves every checkpoint_freq sessions
     # so you can run long CPU trainings as multiple short segments:
@@ -333,7 +483,7 @@ def train(args):
         # Manual loop to checkpoint; delegate single-step to agent_trainer for tqdm consistency
         # but checkpoint every N sessions to survive CTRL+C / power loss
         for i in tqdm(range(args.sessions), desc="sessions"):
-            model.learn(total_timesteps=model.n_steps * args.runs)
+            model.learn(total_timesteps=model.n_steps * args.runs, callback=eval_callback)
             # periodic checkpoint (and always on last session)
             is_checkpoint = checkpoint_freq > 0 and ((i + 1) % checkpoint_freq == 0)
             is_last = (i + 1) == args.sessions

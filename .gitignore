@@ -18,6 +18,9 @@ venv/
 # Project artifacts
 models/*.zip
 !models/.gitkeep
+models_robust/*.zip
+!models_robust/.gitkeep
+logs_robust/
 sessions/
 roms/*.gb
 !roms/.gitkeep

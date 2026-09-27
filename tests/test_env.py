@@ -13,7 +13,18 @@ def env():
         pytest.skip("roms/tetris.gb not found (CI without ROM)")
     if not Path("states/init.state").exists():
         pytest.skip("states/init.state not found")
-    e = tetris_env(gb_path="roms/tetris.gb", window="null", log_level="ERROR")
+    e = tetris_env(gb_path="roms/tetris.gb", window="null", log_level="ERROR", obs_mode="board")
+    yield e
+    e.close()
+
+
+@pytest.fixture(scope="module")
+def enriched_env():
+    if not Path("roms/tetris.gb").exists():
+        pytest.skip("roms/tetris.gb not found (CI without ROM)")
+    if not Path("states/init.state").exists():
+        pytest.skip("states/init.state not found")
+    e = tetris_env(gb_path="roms/tetris.gb", window="null", log_level="ERROR", obs_mode="enriched")
     yield e
     e.close()
 
@@ -102,3 +113,32 @@ class TestObservationValues:
         obs = env.render()
         assert obs.dtype == np.uint8
         assert obs.min() >= 0 and obs.max() <= 8, "Observation values must be 0-8"
+
+
+class TestEnrichedObs:
+    """Enriched Dict obs: board + next + current + features."""
+
+    def test_dict_keys(self, enriched_env):
+        obs, info = enriched_env.reset(seed=42)
+        assert set(obs) == {"board", "next", "current", "features"}
+        assert obs["board"].shape == (18, 10)
+        assert obs["next"].shape == (7,)
+        assert obs["current"].shape == (7,)
+        assert obs["features"].shape == (14,)
+        assert isinstance(enriched_env.observation_space, spaces.Dict)
+
+    def test_step_dict(self, enriched_env):
+        enriched_env.reset(seed=42)
+        obs, reward, terminated, truncated, info = enriched_env.step(0)
+        assert set(obs) == {"board", "next", "current", "features"}
+
+    def test_truncation(self):
+        if not Path("roms/tetris.gb").exists():
+            pytest.skip("requires ROM")
+        e = tetris_env(gb_path="roms/tetris.gb", window="null", log_level="ERROR", max_steps=3)
+        e.reset(seed=42)
+        _, _, _, trunc1, _ = e.step(0)
+        _, _, _, trunc2, _ = e.step(0)
+        _, _, _, trunc3, _ = e.step(0)
+        assert trunc1 is False and trunc2 is False and trunc3 is True
+        e.close()

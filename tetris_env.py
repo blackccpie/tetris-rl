@@ -57,6 +57,28 @@ def parse_action(s: str) -> int:
         raise ValueError(f"Invalid action: {action}")
 
 
+# Tetromino IDs for next/current-piece observation (GB Tetris NEXT box).
+# PyBoy `game_wrapper.next_tetromino()` returns one of these single chars.
+TETROMINOES = ("I", "O", "T", "S", "Z", "J", "L")
+TETROMINO_TO_ID = {t: i for i, t in enumerate(TETROMINOES)}
+FEATURE_DIM = 14  # 10 normalized heights + holes + bump + max_well + n_wells
+
+
+def tetromino_to_id(t: str | None) -> int:
+    """Map next_tetromino() char to 0-6; unknown/None → -1 (caller uses zeros)."""
+    if t is None:
+        return -1
+    return TETROMINO_TO_ID.get(str(t).upper(), -1)
+
+
+def one_hot(idx: int, n: int = 7) -> np.ndarray:
+    """One-hot float32 vector; idx<0 → zeros (unknown piece, robust)."""
+    v = np.zeros(n, dtype=np.float32)
+    if 0 <= idx < n:
+        v[idx] = 1.0
+    return v
+
+
 class tetris_env(Env):  # noqa: N801
     """
     Defines an environment for managing the game state, the agent's actions, and the
@@ -73,6 +95,9 @@ class tetris_env(Env):  # noqa: N801
         log_level: str = "ERROR",
         shaped_alpha: float = 0.1,
         shaped_weights: tuple[float, float, float, float] | None = None,
+        obs_mode: str = "enriched",
+        max_steps: int = 10000,
+        noop_max: int = 30,
     ) -> None:
         """
         Initialize the Tetris environment.
@@ -93,6 +118,12 @@ class tetris_env(Env):  # noqa: N801
                 (height, lines, holes, bump) weights. Defaults to
                 (-0.5, 0.75, -0.8, -0.5) — stronger bump (-0.5 vs -0.35) punishes
                 stacking first pieces centrally without spreading.
+            obs_mode (str): "enriched" (Dict board+next+current+features, robust)
+                or "board" (legacy Box 18×10 only, for ablation).
+            max_steps (int): Episode truncation after N steps (0=disabled).
+                Prevents infinite stall loops; 10000 default.
+            noop_max (int): Random no-op ticks on reset in [0, noop_max] to
+                desync piece RNG across parallel envs (domain randomization).
         """
         super().__init__()
 
@@ -122,6 +153,16 @@ class tetris_env(Env):  # noqa: N801
         # without spreading; PASS removed to force lateral/rotation.
         self.shaped_weights = shaped_weights if shaped_weights is not None else (-0.5, 0.75, -0.8, -0.5)
         self.prev_shaped: float = 0.0
+        if obs_mode not in ("board", "enriched"):
+            raise ValueError(f"Invalid obs_mode '{obs_mode}': expected 'board' or 'enriched'")
+        self.obs_mode = obs_mode
+        self.max_steps = int(max_steps)
+        self.noop_max = int(noop_max)
+        self.step_count = 0
+        # piece tracking: next_tetromino() gives upcoming piece; current is
+        # inferred as previous next on change (no direct current API in PyBoy).
+        self._prev_next_idx = -1
+        self._current_idx = -1
 
         # 5 actions — UP and PASS removed (UP no-op, PASS let pieces fall centrally
         # without moving — caused “stack first pieces without moving”)
@@ -149,7 +190,17 @@ class tetris_env(Env):  # noqa: N801
         self.board = np.zeros(self.output_shape)
 
         self.action_space = spaces.Discrete(len(self.valid_actions))
-        self.observation_space = spaces.Box(low=0, high=8, shape=self.output_shape, dtype=np.uint8)
+        if self.obs_mode == "board":
+            self.observation_space = spaces.Box(low=0, high=8, shape=self.output_shape, dtype=np.uint8)
+        else:
+            self.observation_space = spaces.Dict(
+                {
+                    "board": spaces.Box(low=0, high=8, shape=self.output_shape, dtype=np.uint8),
+                    "next": spaces.Box(low=0.0, high=1.0, shape=(7,), dtype=np.float32),
+                    "current": spaces.Box(low=0.0, high=1.0, shape=(7,), dtype=np.float32),
+                    "features": spaces.Box(low=0.0, high=1.0, shape=(FEATURE_DIM,), dtype=np.float32),
+                }
+            )
 
         self.current_score = 0
         self.prev_shaped = 0.0
@@ -190,7 +241,7 @@ class tetris_env(Env):  # noqa: N801
         self._tile_mapping = self.pyboy.game_wrapper.mapping_compressed
         self.reset()
 
-    def reset(self, seed: int | None = None) -> tuple[np.ndarray, dict]:
+    def reset(self, seed: int | None = None) -> tuple[np.ndarray | dict, dict]:
         """
         Reset the environment to its initial state.
 
@@ -198,7 +249,7 @@ class tetris_env(Env):  # noqa: N801
             seed (int, optional): Seed for random number generation.
 
         Returns:
-            tuple: Observation of the board and an empty dictionary.
+            tuple: Observation (board Box or enriched Dict) and info dict.
         """
         super().reset(seed=seed)
 
@@ -210,13 +261,30 @@ class tetris_env(Env):  # noqa: N801
             for _ in range(seed % 60):
                 self.pyboy.tick()
 
-        observation = self.render()
+        # domain randomization: random no-op ticks desync piece RNG across envs
+        if getattr(self, "noop_max", 0) > 0:
+            try:
+                n_noop = int(self.np_random.integers(0, self.noop_max + 1))
+            except Exception:
+                n_noop = 0
+            for _ in range(n_noop):
+                self.pyboy.tick()
+                if getattr(self.pyboy, "quitting", False):
+                    raise KeyboardInterrupt
+
+        self.step_count = 0
+        board = self.render_board()
+        # (re)sync piece tracking after state load
+        next_idx = self._read_next_idx()
+        self._prev_next_idx = next_idx
+        self._current_idx = -1  # unknown until first next-change; zeros one-hot
+        observation = self._build_obs(board)
         self.current_score = self.get_game_score()
-        self.prev_shaped = self.get_total_score(observation)
-        self.board = observation
+        self.prev_shaped = self.get_total_score(board)
+        self.board = board
         return observation, {}
 
-    def step(self, action: int) -> tuple[np.ndarray, float, bool, bool, dict]:
+    def step(self, action: int) -> tuple[np.ndarray | dict, float, bool, bool, dict]:
         """
         Perform an action in the environment.
 
@@ -227,12 +295,16 @@ class tetris_env(Env):  # noqa: N801
             tuple: Observation, reward, terminated flag, truncated flag, and additional info.
                    Reward is hybrid PBRS: score delta + alpha * shaped delta
                    (alpha=0 → legacy pure score). Shaped is get_total_score().
+                   Truncated when max_steps>0 and step_count reaches it.
         """
         self.do_input(action)
-        observation = self.render()
+        self.step_count += 1
+        board = self.render_board()
+        self._update_pieces()
+        observation = self._build_obs(board)
 
         game_score = self.get_game_score()
-        shaped = self.get_total_score(observation)
+        shaped = self.get_total_score(board)
         shaped_delta = shaped - self.prev_shaped
         score_delta = game_score - self.current_score
 
@@ -242,24 +314,22 @@ class tetris_env(Env):  # noqa: N801
         # update trackers before early return so next reset is consistent
         self.current_score = game_score
         self.prev_shaped = shaped
-        self.board = observation
+        self.board = board
 
         if self.pyboy.game_wrapper.game_over():
             # keep -100 terminal penalty but include shaped term for PBRS
             # (if alpha=0, this is exactly legacy -100)
             return observation, -100 + self.shaped_alpha * shaped_delta, True, False, {}
 
+        if getattr(self, "max_steps", 0) > 0 and self.step_count >= self.max_steps:
+            return observation, reward, False, True, {"truncated": "max_steps"}
+
         logging.debug(f"Game Score: {game_score} Shaped: {shaped:.2f} Reward: {reward:.2f}")
 
         return observation, reward, False, False, {}
 
-    def render(self) -> np.ndarray:
-        """
-        Render the current state of the game board.
-
-        Returns:
-            numpy.ndarray: 2D binary array representing the game board.
-        """
+    def render_board(self) -> np.ndarray:
+        """Read 18×10 compressed-tile board from the emulator."""
         mapping = self._tile_mapping
         ga = self.pyboy.game_area()
         flat = ga.flatten().astype(np.int64)
@@ -268,20 +338,85 @@ class tetris_env(Env):  # noqa: N801
         self.observation = compressed.astype(np.uint8)
         return self.observation
 
-    def get_total_score(self, observation: np.ndarray) -> float:
+    def render(self) -> np.ndarray | dict:
+        """
+        Render the current observation (board Box or enriched Dict).
+
+        Returns:
+            Board array in "board" mode, Dict in "enriched" mode.
+        """
+        board = self.render_board()
+        return self._build_obs(board)
+
+    def _read_next_idx(self) -> int:
+        """Read next_tetromino() → 0-6; -1 on unknown/error (ROM-less safe)."""
+        try:
+            gw = getattr(getattr(self, "pyboy", None), "game_wrapper", None)
+            if gw is None or not hasattr(gw, "next_tetromino"):
+                return -1
+            return tetromino_to_id(gw.next_tetromino())
+        except Exception:
+            return -1
+
+    def _update_pieces(self) -> None:
+        """Track current as previous next on change (no direct current API)."""
+        nxt = self._read_next_idx()
+        if nxt < 0:
+            return
+        prev = getattr(self, "_prev_next_idx", -1)
+        if prev < 0:
+            self._prev_next_idx = nxt
+            return
+        if nxt != prev:
+            # next shifted → previous next is now falling
+            self._current_idx = prev
+            self._prev_next_idx = nxt
+
+    def _build_obs(self, board: np.ndarray) -> np.ndarray | dict:
+        """Wrap board into Box or enriched Dict observation."""
+        if getattr(self, "obs_mode", "board") == "board":
+            return board
+        return {
+            "board": board,
+            "next": one_hot(getattr(self, "_prev_next_idx", -1)),
+            "current": one_hot(getattr(self, "_current_idx", -1)),
+            "features": self.get_features(board),
+        }
+
+    def get_features(self, board: np.ndarray) -> np.ndarray:
+        """14-dim robust features: 10 heights/18 + holes/20 + bump/40 + max_well/10 + n_wells/10."""
+        board = board if not isinstance(board, dict) else board.get("board", np.zeros(self.output_shape))
+        h = board.shape[0]
+        heights = [self.get_column_height(board[:, c], h) for c in range(board.shape[1])]
+        holes = self.get_holes_count(board)
+        bump = self.get_bumpiness(board)
+        depths = []
+        for c in range(len(heights)):
+            left = heights[c - 1] if c > 0 else heights[c]
+            right = heights[c + 1] if c < len(heights) - 1 else heights[c]
+            ref = min(left, right)
+            depths.append(max(0, ref - heights[c]))
+        max_well = max(depths) if depths else 0
+        n_wells = sum(1 for d in depths if d >= 2)
+        feats = [min(x / 18.0, 1.0) for x in heights]
+        feats += [min(holes / 20.0, 1.0), min(bump / 40.0, 1.0), min(max_well / 10.0, 1.0), min(n_wells / 10.0, 1.0)]
+        return np.asarray(feats, dtype=np.float32)
+
+    def get_total_score(self, observation: np.ndarray | dict) -> float:
         """
         Calculate the total score based on the current observation.
 
         Args:
-            observation (numpy.ndarray): Current state of the game board.
+            observation: Board array or enriched Dict (uses ["board"]).
 
         Returns:
             int: Total score.
         """
-        height_score = self.get_aggregate_height(observation)
-        completion_score = self.get_complete_lines(observation)
-        holes_score = self.get_holes_count(observation)
-        bumpiness_score = self.get_bumpiness(observation)
+        board = observation["board"] if isinstance(observation, dict) else observation
+        height_score = self.get_aggregate_height(board)
+        completion_score = self.get_complete_lines(board)
+        holes_score = self.get_holes_count(board)
+        bumpiness_score = self.get_bumpiness(board)
         logging.debug(f"Height Score: {height_score}")
         logging.debug(f"Bumpiness Score: {bumpiness_score}")
         logging.debug(f"Completion Score: {completion_score}")

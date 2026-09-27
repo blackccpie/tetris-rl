@@ -43,6 +43,15 @@ def parse_args():
     parser.add_argument("--log-level", type=str, default="INFO")
     parser.add_argument("--deterministic", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--device", type=str, default="auto", choices=["auto", "cpu", "cuda"])
+    parser.add_argument(
+        "--obs-mode",
+        type=str,
+        default="enriched",
+        choices=["enriched", "board"],
+        help="Must match train obs_mode.",
+    )
+    parser.add_argument("--max-steps", type=int, default=10000, help="Truncation (must match train for eval).")
+    parser.add_argument("--noop-max", type=int, default=0, help="No random noops at eval by default.")
     return parser.parse_args()
 
 
@@ -65,14 +74,17 @@ if __name__ == "__main__":
         log_level=args.log_level,
         window=window,
         shaped_alpha=args.shaped_alpha,
+        obs_mode=args.obs_mode,
+        max_steps=args.max_steps,
+        noop_max=args.noop_max,
     )
 
-    # PPO.load needs custom_objects for TetrisCNN if saved with CnnPolicy
+    # PPO.load needs custom_objects for TetrisCNN / TetrisMultiInput
     custom_objects = None
     try:
-        from train import TetrisCNN
+        from train import TetrisCNN, TetrisMultiInput
 
-        custom_objects = {"TetrisCNN": TetrisCNN}
+        custom_objects = {"TetrisCNN": TetrisCNN, "TetrisMultiInput": TetrisMultiInput}
     except Exception:
         pass
     try:
@@ -85,15 +97,16 @@ if __name__ == "__main__":
             seed = np.random.randint(0, 100000)
             obs, _ = env.reset(seed=seed)
             terminated = False
+            truncated = False
             steps = 0
 
-            while not terminated:
+            while not (terminated or truncated):
                 # Allow clean exit when SIGINT was delivered inside frame_limiter
                 # (patched to set pyboy.quitting instead of raising)
                 if getattr(env.pyboy, "quitting", False):
                     raise KeyboardInterrupt
                 action, _states = model.predict(obs, deterministic=args.deterministic)
-                obs, reward, terminated, _, _ = env.step(action)
+                obs, reward, terminated, truncated, _ = env.step(action)
                 env.render()
                 steps += 1
                 if getattr(env.pyboy, "quitting", False):

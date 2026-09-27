@@ -10,15 +10,24 @@ TOTAL_SESSIONS=600
 PER_SEGMENT=60
 RUNS=4
 STEPS=2048
-POLICY="CnnPolicy"
+POLICY="MultiInputPolicy"
+OBS_MODE="enriched"
 SHAPED_ALPHA=0.1
 BATCH_SIZE=32
 GAMMA=0.95
+GAE=0.95
+VF_COEF=0.5
 LR=1e-4
+LR_SCHED="linear"
 CLIP=0.1
+CLIP_VF=0.2
+TARGET_KL=0.02
 ENT=0.03
 FREQ=8
-MODEL="models/tetris_ppo_model"
+MAX_STEPS=10000
+NOOP_MAX=30
+EVAL_FREQ=0
+MODEL="models_robust/tetris_ppo_next"
 DEVICE="cpu"
 N_ENVS=4
 WINDOW="null"
@@ -37,7 +46,8 @@ Options:
   --per-segment N    sessions per invocation (default $PER_SEGMENT)
   --runs N           runs per session (default $RUNS)
   --steps N          n_steps per rollout (default $STEPS)
-  --policy NAME      CnnPolicy|MlpPolicy (default $POLICY)
+  --policy NAME      CnnPolicy|MlpPolicy|MultiInputPolicy (default $POLICY)
+  --obs-mode NAME    enriched|board (default $OBS_MODE; enriched needs MultiInputPolicy)
   --shaped-alpha F   PBRS alpha 0.0 legacy, 0.1 hybrid (default $SHAPED_ALPHA)
   --model PATH       model prefix (default $MODEL)
   --device NAME      auto|cpu|cuda (default $DEVICE)
@@ -46,7 +56,8 @@ Options:
   --window NAME      null|SDL2|headless (default $WINDOW)
   --checkpoint-freq N save every N sessions (default $CHECKPOINT_FREQ, 0=only end)
   --tensorboard DIR  tensorboard log dir (default none)
-  --batch-size N --gamma F --lr F --clip F --ent F  (PPO hyperparams)
+  --batch-size N --gamma F --gae F --vf-coef F --lr F --lr-sched S --clip F --clip-vf F --target-kl F --ent F  (PPO)
+  --max-steps N --noop-max N --eval-freq N  (robustness: truncation, noops, EvalCallback)
   -h, --help         show this help
 
 Examples:
@@ -72,6 +83,7 @@ while [[ $# -gt 0 ]]; do
     --runs) RUNS="$2"; shift 2;;
     --steps) STEPS="$2"; shift 2;;
     --policy) POLICY="$2"; shift 2;;
+    --obs-mode) OBS_MODE="$2"; shift 2;;
     --shaped-alpha) SHAPED_ALPHA="$2"; shift 2;;
     --model) MODEL="$2"; shift 2;;
     --device) DEVICE="$2"; shift 2;;
@@ -82,9 +94,17 @@ while [[ $# -gt 0 ]]; do
     --tensorboard) TENSORBOARD="$2"; shift 2;;
     --batch-size) BATCH_SIZE="$2"; shift 2;;
     --gamma) GAMMA="$2"; shift 2;;
+    --gae) GAE="$2"; shift 2;;
+    --vf-coef) VF_COEF="$2"; shift 2;;
     --lr) LR="$2"; shift 2;;
+    --lr-sched) LR_SCHED="$2"; shift 2;;
     --clip) CLIP="$2"; shift 2;;
+    --clip-vf) CLIP_VF="$2"; shift 2;;
+    --target-kl) TARGET_KL="$2"; shift 2;;
     --ent) ENT="$2"; shift 2;;
+    --max-steps) MAX_STEPS="$2"; shift 2;;
+    --noop-max) NOOP_MAX="$2"; shift 2;;
+    --eval-freq) EVAL_FREQ="$2"; shift 2;;
     -h|--help) usage;;
     *) echo "Unknown arg: $1" >&2; usage;;
   esac
@@ -99,7 +119,7 @@ mkdir -p "$(dirname "$MODEL")" logs 2>/dev/null || true
 TOTAL_STEPS=$((TOTAL_SESSIONS * RUNS * STEPS))
 PER_STEPS=$((PER_SEGMENT * RUNS * STEPS))
 echo "=== Train segments: total $TOTAL_SESSIONS sessions ($TOTAL_STEPS steps), $PER_SEGMENT per segment ($PER_STEPS steps) ==="
-echo "Policy $POLICY α=$SHAPED_ALPHA ent=$ENT freq=$FREQ device $DEVICE n_envs $N_ENVS window $WINDOW checkpoint every $CHECKPOINT_FREQ sessions"
+echo "Policy $POLICY obs $OBS_MODE α=$SHAPED_ALPHA ent=$ENT freq=$FREQ gae=$GAE vf=$VF_COEF clipvf=$CLIP_VF kl=$TARGET_KL device $DEVICE n_envs $N_ENVS window $WINDOW checkpoint every $CHECKPOINT_FREQ sessions"
 echo "Model $MODEL.zip — resumes automatically if exists (5 actions LEFT/RIGHT/DOWN/A/B; old 7/6-act auto-starts fresh)"
 echo
 
@@ -114,23 +134,28 @@ for (( seg=1; seg<=SEGMENTS; seg++ )); do
   if [[ -n "$TENSORBOARD" ]]; then TB_ARGS=(--tensorboard "$TENSORBOARD"); fi
 
   # shellcheck disable=SC2086
+  EVAL_ARGS=()
+  if [[ "$EVAL_FREQ" != "0" ]]; then EVAL_ARGS=(--eval-freq "$EVAL_FREQ"); fi
   uv run train.py \
     --sessions "$this_seg" --runs "$RUNS" --steps "$STEPS" \
-    --policy "$POLICY" --shaped-alpha "$SHAPED_ALPHA" \
-    --batch-size "$BATCH_SIZE" --gamma "$GAMMA" --learning-rate "$LR" --clip-range "$CLIP" --ent-coef "$ENT" --freq "$FREQ" \
+    --policy "$POLICY" --obs-mode "$OBS_MODE" --shaped-alpha "$SHAPED_ALPHA" \
+    --batch-size "$BATCH_SIZE" --gamma "$GAMMA" --gae-lambda "$GAE" --vf-coef "$VF_COEF" \
+    --learning-rate "$LR" --lr-schedule "$LR_SCHED" --clip-range "$CLIP" --clip-range-vf "$CLIP_VF" \
+    --target-kl "$TARGET_KL" --ent-coef "$ENT" --freq "$FREQ" \
+    --max-steps "$MAX_STEPS" --noop-max "$NOOP_MAX" \
     --model-name "$MODEL" --device "$DEVICE" --n-envs "$N_ENVS" --window "$WINDOW" \
-    --checkpoint-freq "$CHECKPOINT_FREQ" "${TB_ARGS[@]}"
+    --checkpoint-freq "$CHECKPOINT_FREQ" "${TB_ARGS[@]}" "${EVAL_ARGS[@]}"
 
   echo "--- Segment $seg done — $MODEL.zip updated ---"
-  # quick eval every segment (match train freq/alpha)
+  # quick eval every segment (match train freq/alpha/obs)
   if [[ -f "${MODEL}.zip" ]]; then
-    echo "Eval 2 runs (headless, freq $FREQ):"
-    uv run play.py --window null --runs 2 --freq "$FREQ" --device "$DEVICE" --model "$MODEL" --shaped-alpha "$SHAPED_ALPHA" 2>&1 | tail -5 || true
+    echo "Eval 2 runs (headless, freq $FREQ obs $OBS_MODE):"
+    uv run play.py --window null --runs 2 --freq "$FREQ" --obs-mode "$OBS_MODE" --device "$DEVICE" --model "$MODEL" --shaped-alpha "$SHAPED_ALPHA" 2>&1 | tail -5 || true
   fi
 done
 
 echo
-echo "All segments done. Final model: $MODEL.zip (freq $FREQ ent $ENT 5 actions)"
+echo "All segments done. Final model: $MODEL.zip (freq $FREQ ent $ENT obs $OBS_MODE 5 actions)"
 ls -lh "${MODEL}.zip" "${MODEL}"_ckpt_*.zip 2>/dev/null | tail -20 || ls -lh "${MODEL}.zip"
 echo "Resume: re-run same command — train.py loads $MODEL.zip and continues"
-echo "Play: uv run play.py --window SDL2 --freq $FREQ --model $MODEL --shaped-alpha $SHAPED_ALPHA"
+echo "Play: uv run play.py --window SDL2 --freq $FREQ --obs-mode $OBS_MODE --model $MODEL --shaped-alpha $SHAPED_ALPHA"

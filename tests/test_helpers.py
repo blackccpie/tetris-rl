@@ -2,7 +2,7 @@ import numpy as np
 import pytest
 from pyboy.utils import WindowEvent
 
-from tetris_env import action_names, parse_action, tetris_env
+from tetris_env import FEATURE_DIM, TETROMINOES, action_names, one_hot, parse_action, tetris_env, tetromino_to_id
 
 
 @pytest.fixture(scope="module")
@@ -26,6 +26,9 @@ def helper_env():
     e = tetris_env.__new__(tetris_env)
     # minimal attrs used by helpers (none currently, but safe defaults)
     e.output_shape = (18, 10)
+    e.obs_mode = "enriched"
+    e._prev_next_idx = -1
+    e._current_idx = -1
     yield e
 
 
@@ -137,6 +140,48 @@ class TestBoardHelpers:
     def test_get_total_score_returns_number(self, helper_env):
         score = helper_env.get_total_score(self._empty_board())
         assert isinstance(score, int | float | np.number)
+
+    def test_get_total_score_accepts_dict(self, helper_env):
+        obs = {"board": self._empty_board(), "next": one_hot(0), "current": one_hot(1)}
+        assert helper_env.get_total_score(obs) == helper_env.get_total_score(self._empty_board())
+
+
+class TestRobustObs:
+    """ROM-less tests for next/current/features helpers."""
+
+    def test_tetromino_ids(self):
+        assert [tetromino_to_id(t) for t in TETROMINOES] == list(range(7))
+        assert tetromino_to_id("x") == -1
+        assert tetromino_to_id(None) == -1
+
+    def test_one_hot(self):
+        assert one_hot(3).tolist() == [0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0]
+        assert one_hot(-1).sum() == 0.0
+
+    def test_features_empty(self, helper_env):
+        f = helper_env.get_features(np.zeros((18, 10), dtype=np.uint8))
+        assert f.shape == (FEATURE_DIM,)
+        assert f.dtype == np.float32
+        assert (f == 0).all()
+
+    def test_features_single_column(self, helper_env):
+        b = np.zeros((18, 10), dtype=np.uint8)
+        b[15:, 0] = 1
+        f = helper_env.get_features(b)
+        assert f.shape == (FEATURE_DIM,)
+        assert f[0] == pytest.approx(3 / 18)
+        assert (f >= 0).all() and (f <= 1).all()
+
+    def test_build_obs_enriched_romless(self, helper_env):
+        b = np.zeros((18, 10), dtype=np.uint8)
+        obs = helper_env._build_obs(b)
+        assert set(obs) == {"board", "next", "current", "features"}
+        assert obs["board"].shape == (18, 10)
+        assert obs["next"].shape == (7,)
+
+    def test_obs_mode_guard(self):
+        with pytest.raises(ValueError, match="Invalid obs_mode"):
+            tetris_env(gb_path="roms/tetris.gb", window="null", obs_mode="bad", log_level="ERROR")
 
 
 class TestTetrisEnvGuards:
