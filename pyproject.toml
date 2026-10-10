@@ -19,6 +19,7 @@ dependencies = [
 dev = [
     "pytest",
     "ruff",
+    "tensorboard",
 ]
 
 [tool.ruff]
