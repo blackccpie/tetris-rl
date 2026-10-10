@@ -51,7 +51,7 @@ uv run play.py --window null --runs 2 --model models_robust/tetris_ppo_next
 xvfb-run -a uv run play.py --window SDL2  # no DISPLAY
 ```
 
-Defaults: enriched obs + `α=0.1`, `freq 8`, `lr 1e-4` linear, `clip 0.1`, `ent 0.03`, `gamma 0.95`, `gae 0.95`, `vf 0.5`, `clip-vf 0.2`, `kl 0.02`, `batch 32`. Scale: `200×4×2048≈1.6M` steps, `600≈5M`, `1200≈10M`.
+Defaults: enriched obs + `α=0.1`, `freq 8`, `lr 1e-4` constant, `clip 0.1`, `ent 0.05`, `gamma 0.95`, `gae 0.95`, `vf 0.5`, `clip-vf 0.2`, `kl 0.02`, `batch 32`. Scale: `200×4×2048≈1.6M` steps, `600≈5M`, `1200≈10M`.
 
 ## How it works
 

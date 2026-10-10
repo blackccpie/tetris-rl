@@ -232,7 +232,11 @@ def parse_args():
         help="Normalize advantages per minibatch (robust default true).",
     )
     parser.add_argument(
-        "--lr-schedule", type=str, default="linear", choices=["linear", "constant"], help="LR decay schedule."
+        "--lr-schedule",
+        type=str,
+        default="constant",
+        choices=["linear", "constant"],
+        help="LR schedule (constant recommended: linear restarts every session, spiking KL).",
     )
     parser.add_argument(
         "--clip-schedule", type=str, default="constant", choices=["linear", "constant"], help="Clip decay schedule."
@@ -253,8 +257,8 @@ def parse_args():
     parser.add_argument(
         "--ent-coef",
         type=float,
-        default=0.03,
-        help="Entropy bonus (0.03 spreads early pieces vs 0.02/0.01 DOWN collapse).",
+        default=0.05,
+        help="Entropy bonus (0.05 keeps peaked policies exploring; 0.03 early, 0.01 collapsed).",
     )
     parser.add_argument(
         "--shaped-alpha",
@@ -376,6 +380,7 @@ def train(args):
             tb_log = None
 
     custom_objects = {"TetrisCNN": TetrisCNN, "TetrisMultiInput": TetrisMultiInput}
+    resumed = False
     if os.path.exists(f"{args.model_name}.zip"):
         try:
             model = PPO.load(args.model_name, env=env, device=device, custom_objects=custom_objects)
@@ -396,6 +401,7 @@ def train(args):
                 model = None
             else:
                 print("-> continuing training!")
+                resumed = True
         except ValueError as e:
             msg = str(e)
             if (
@@ -451,6 +457,26 @@ def train(args):
             tensorboard_log=tb_log,
             seed=args.seed if args.seed != 0 else None,
         )
+    elif resumed:
+        # PPO.load keeps stored hyperparams — re-apply CLI values so segmented
+        # runs can tune without restarting (optimizer state is preserved).
+        from stable_baselines3.common.utils import FloatSchedule
+
+        model.ent_coef = args.ent_coef
+        model.vf_coef = args.vf_coef
+        model.gamma = args.gamma
+        model.gae_lambda = args.gae_lambda
+        model.max_grad_norm = args.max_grad_norm
+        model.target_kl = target_kl
+        model.normalize_advantage = args.normalize_advantage
+        model.clip_range = FloatSchedule(clip)  # float or schedule both accepted
+        model.learning_rate = lr
+        model._setup_lr_schedule()
+        print(
+            f"-> applied CLI hyperparams to resumed model "
+            f"(ent={args.ent_coef} vf={args.vf_coef} lr={args.learning_rate}/{args.lr_schedule} "
+            f"clip={args.clip_range} kl={args.target_kl} gamma={args.gamma} gae={args.gae_lambda})"
+        )
 
     # Optional EvalCallback — best-model tracking for robustness
     eval_callback = None
@@ -481,9 +507,19 @@ def train(args):
 
     try:
         # Manual loop to checkpoint; delegate single-step to agent_trainer for tqdm consistency
-        # but checkpoint every N sessions to survive CTRL+C / power loss
+        # but checkpoint every N sessions to survive CTRL+C / power loss.
+        # reset_num_timesteps=False: the zip counter accumulates across sessions and
+        # invocations (default True resets it every learn() call, hiding progress).
+        # NOTE: with reset=False, a linear LR schedule would collapse to ~0 after the
+        # first sessions (each call starts at X/(done+X)) — use constant (default).
+        if args.lr_schedule == "linear" and (args.sessions > 1 or resumed):
+            print("-> warning: linear LR restarts every session; prefer --lr-schedule constant for segments.")
         for i in tqdm(range(args.sessions), desc="sessions"):
-            model.learn(total_timesteps=model.n_steps * args.runs, callback=eval_callback)
+            model.learn(
+                total_timesteps=model.n_steps * args.runs,
+                callback=eval_callback,
+                reset_num_timesteps=False,
+            )
             # periodic checkpoint (and always on last session)
             is_checkpoint = checkpoint_freq > 0 and ((i + 1) % checkpoint_freq == 0)
             is_last = (i + 1) == args.sessions
