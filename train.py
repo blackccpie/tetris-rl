@@ -472,6 +472,10 @@ def train(args):
         model.clip_range = FloatSchedule(clip)  # float or schedule both accepted
         model.learning_rate = lr
         model._setup_lr_schedule()
+        if tb_log:
+            # PPO.load keeps the stored logger (no TB writer) — reattach so
+            # resumed runs actually log (reproduced: 10 resumed sessions, 0 bytes).
+            model.tensorboard_log = tb_log
         print(
             f"-> applied CLI hyperparams to resumed model "
             f"(ent={args.ent_coef} vf={args.vf_coef} lr={args.learning_rate}/{args.lr_schedule} "
