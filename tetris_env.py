@@ -301,10 +301,13 @@ class tetris_env(Env):  # noqa: N801
         self.step_count += 1
         board = self.render_board()
         self._update_pieces()
-        observation = self._build_obs(board)
+        # single shared stats computation for obs features + shaped reward
+        # (was ~3 full Python column-scans per step before)
+        stats = self._board_stats(board)
+        observation = self._build_obs(board, stats)
 
         game_score = self.get_game_score()
-        shaped = self.get_total_score(board)
+        shaped = self._shaped_from_stats(stats)
         shaped_delta = shaped - self.prev_shaped
         score_delta = game_score - self.current_score
 
@@ -372,7 +375,7 @@ class tetris_env(Env):  # noqa: N801
             self._current_idx = prev
             self._prev_next_idx = nxt
 
-    def _build_obs(self, board: np.ndarray) -> np.ndarray | dict:
+    def _build_obs(self, board: np.ndarray, stats=None) -> np.ndarray | dict:
         """Wrap board into Box or enriched Dict observation."""
         if getattr(self, "obs_mode", "board") == "board":
             return board
@@ -380,27 +383,47 @@ class tetris_env(Env):  # noqa: N801
             "board": board,
             "next": one_hot(getattr(self, "_prev_next_idx", -1)),
             "current": one_hot(getattr(self, "_current_idx", -1)),
-            "features": self.get_features(board),
+            "features": self._features_from_stats(stats) if stats is not None else self.get_features(board),
         }
+
+    def _board_stats(self, board: np.ndarray) -> tuple[np.ndarray, int, int, int]:
+        """Vectorized board stats: (heights[10] int, holes, bumpiness, complete lines).
+
+        Bit-identical to get_column_height/get_holes_count/get_bumpiness/
+        get_complete_lines (any non-zero tile counts as filled).
+        """
+        board = board["board"] if isinstance(board, dict) else board
+        h = board.shape[0]
+        filled = board != 0
+        has = filled.any(axis=0)
+        heights = np.where(has, h - filled.argmax(axis=0), 0).astype(np.int64)
+        holes = int((~filled & (filled.cumsum(axis=0) > 0)).sum())
+        bump = int(np.abs(np.diff(heights)).sum())
+        lines = int(filled.all(axis=1).sum())
+        return heights, holes, bump, lines
+
+    def _shaped_from_stats(self, stats: tuple[np.ndarray, int, int, int]) -> float:
+        """Shaped score from precomputed stats (same weights as get_total_score)."""
+        heights, holes, bump, lines = stats
+        scores = [int(heights.sum()), lines, holes, bump]
+        weights = getattr(self, "shaped_weights", (-0.5, 0.75, -0.35, -0.2))
+        return float(np.sum(np.multiply(weights, scores)))
+
+    def _features_from_stats(self, stats: tuple[np.ndarray, int, int, int]) -> np.ndarray:
+        """14-dim robust features from precomputed stats."""
+        heights, holes, bump, _ = stats
+        left = np.concatenate(([heights[0]], heights[:-1]))
+        right = np.concatenate((heights[1:], [heights[-1]]))
+        depths = np.maximum(0, np.minimum(left, right) - heights)
+        feats = np.minimum(heights / 18.0, 1.0).tolist()
+        feats += [min(holes / 20.0, 1.0), min(bump / 40.0, 1.0)]
+        feats += [min(int(depths.max()) / 10.0, 1.0), min(int((depths >= 2).sum()) / 10.0, 1.0)]
+        return np.asarray(feats, dtype=np.float32)
 
     def get_features(self, board: np.ndarray) -> np.ndarray:
         """14-dim robust features: 10 heights/18 + holes/20 + bump/40 + max_well/10 + n_wells/10."""
         board = board if not isinstance(board, dict) else board.get("board", np.zeros(self.output_shape))
-        h = board.shape[0]
-        heights = [self.get_column_height(board[:, c], h) for c in range(board.shape[1])]
-        holes = self.get_holes_count(board)
-        bump = self.get_bumpiness(board)
-        depths = []
-        for c in range(len(heights)):
-            left = heights[c - 1] if c > 0 else heights[c]
-            right = heights[c + 1] if c < len(heights) - 1 else heights[c]
-            ref = min(left, right)
-            depths.append(max(0, ref - heights[c]))
-        max_well = max(depths) if depths else 0
-        n_wells = sum(1 for d in depths if d >= 2)
-        feats = [min(x / 18.0, 1.0) for x in heights]
-        feats += [min(holes / 20.0, 1.0), min(bump / 40.0, 1.0), min(max_well / 10.0, 1.0), min(n_wells / 10.0, 1.0)]
-        return np.asarray(feats, dtype=np.float32)
+        return self._features_from_stats(self._board_stats(board))
 
     def get_total_score(self, observation: np.ndarray | dict) -> float:
         """
@@ -413,10 +436,11 @@ class tetris_env(Env):  # noqa: N801
             int: Total score.
         """
         board = observation["board"] if isinstance(observation, dict) else observation
-        height_score = self.get_aggregate_height(board)
-        completion_score = self.get_complete_lines(board)
-        holes_score = self.get_holes_count(board)
-        bumpiness_score = self.get_bumpiness(board)
+        heights, holes, bump, lines = self._board_stats(board)
+        height_score = int(heights.sum())
+        completion_score = lines
+        holes_score = holes
+        bumpiness_score = bump
         logging.debug(f"Height Score: {height_score}")
         logging.debug(f"Bumpiness Score: {bumpiness_score}")
         logging.debug(f"Completion Score: {completion_score}")

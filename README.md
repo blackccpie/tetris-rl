@@ -42,7 +42,7 @@ Slow link / <4GB VRAM: `uv sync --no-install-package torch && uv pip install tor
 uv run pytest tests/ -v
 uv run ruff check . && uv run ruff format --check .
 
-# Train (defaults → models_robust/tetris_ppo_next.zip, ~1.6M steps)
+# Train (defaults → models_robust/tetris_ppo_next.zip; step totals print at launch, scale with --n-envs)
 uv run train.py --device cpu --window null --sessions 200 --steps 2048
 # Play
 uv run play.py --window SDL2 --model models_robust/tetris_ppo_next
@@ -51,7 +51,7 @@ uv run play.py --window null --runs 2 --model models_robust/tetris_ppo_next
 xvfb-run -a uv run play.py --window SDL2  # no DISPLAY
 ```
 
-Defaults: enriched obs + `α=0.1`, `freq 8`, `lr 1e-4` constant, `clip 0.1`, `ent 0.05`, `gamma 0.95`, `gae 0.95`, `vf 0.5`, `clip-vf 0.2`, `kl 0.02`, `batch 32`. Scale: `200×4×2048≈1.6M` steps, `600≈5M`, `1200≈10M`.
+Defaults: enriched obs + `α=0.1`, `freq 8`, `lr 1e-4` constant, `clip 0.1`, `ent 0.05`, `gamma 0.95`, `gae 0.95`, `vf 0.5`, `clip-vf 0.2`, `kl 0.02`, `batch 32`.
 
 ## How it works
 
@@ -71,13 +71,13 @@ Defaults: enriched obs + `α=0.1`, `freq 8`, `lr 1e-4` constant, `clip 0.1`, `en
 ## Long training (segmented, resumable)
 
 ```bash
-./scripts/train_segments.sh --total 600 --per-segment 60  # 5M in 10×~500k, ckpt every 10
+./scripts/train_segments.sh --total 600 --per-segment 60  # 10 resumable segments, ckpt every 10
 # resume after CTRL+C: re-run the same command (loads .zip; CTRL+C also saves)
 ```
 
 Checkpoints: `models_robust/tetris_ppo_next.zip` + `_ckpt_NNNN.zip`. Resume is automatic; policy/obs/action mismatch restarts fresh with a warning.
 
-Throughput (8-core box): `cpu n_envs 4 → 280fps`, `n_envs 8 → 371fps`; `cuda` only ~5–15% faster (emulator-bound) — prefer **CPU + `n_envs 4–8`**.
+Throughput, end-to-end training fps on this 8-core box (enriched obs, `steps 512`): `n_envs 4 → 570`, `8 → 876`, `12 → 997`, `16 → 1086` — knee at 8–12, default `n_envs 8`. Profile: ~84% of step time is PyBoy ticks, so parallelism (not GPU) is the lever.
 
 ## GPU note (GTX 960 sm_52)
 

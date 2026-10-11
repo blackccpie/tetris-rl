@@ -5,7 +5,7 @@
 
 set -euo pipefail
 
-# Defaults — 5M ≈ 600×4×2048, 1.6M = 200×4×2048, 10M = 1200×4×2048
+# Defaults — steps scale with N_ENVS (SB3 counts env steps): 600 sessions ≈ 10M at n_envs 8
 TOTAL_SESSIONS=600
 PER_SEGMENT=60
 RUNS=4
@@ -29,7 +29,7 @@ NOOP_MAX=30
 EVAL_FREQ=0
 MODEL="models_robust/tetris_ppo_next"
 DEVICE="cpu"
-N_ENVS=4
+N_ENVS=8
 WINDOW="null"
 CHECKPOINT_FREQ=10
 TENSORBOARD=""
@@ -42,7 +42,7 @@ Option A — segmented training (resume-safe). Runs TOTAL_SESSIONS as
 PER_SEGMENT-sized invocations, each resumable via train.py PPO.load.
 
 Options:
-  --total N          total sessions (default $TOTAL_SESSIONS → ~5M steps with $RUNS×$STEPS)
+  --total N          total sessions (steps shown at launch, scales with --n-envs)
   --per-segment N    sessions per invocation (default $PER_SEGMENT)
   --runs N           runs per session (default $RUNS)
   --steps N          n_steps per rollout (default $STEPS)
@@ -61,7 +61,7 @@ Options:
   -h, --help         show this help
 
 Examples:
-  # 5M split 10×60 sessions (~500k each), resumable, checkpoints every 10
+  # 600 sessions in 10 resumable segments, checkpoints every 10
   $0 --total 600 --per-segment 60
 
   # resume after interruption — just re-run same command (loads $MODEL.zip)
@@ -116,8 +116,8 @@ if [[ ! -f "roms/tetris.gb" ]]; then
 fi
 mkdir -p "$(dirname "$MODEL")" logs 2>/dev/null || true
 
-TOTAL_STEPS=$((TOTAL_SESSIONS * RUNS * STEPS))
-PER_STEPS=$((PER_SEGMENT * RUNS * STEPS))
+TOTAL_STEPS=$((TOTAL_SESSIONS * ((RUNS + N_ENVS - 1) / N_ENVS) * STEPS * N_ENVS))
+PER_STEPS=$((PER_SEGMENT * ((RUNS + N_ENVS - 1) / N_ENVS) * STEPS * N_ENVS))
 echo "=== Train segments: total $TOTAL_SESSIONS sessions ($TOTAL_STEPS steps), $PER_SEGMENT per segment ($PER_STEPS steps) ==="
 echo "Policy $POLICY obs $OBS_MODE α=$SHAPED_ALPHA ent=$ENT freq=$FREQ gae=$GAE vf=$VF_COEF clipvf=$CLIP_VF kl=$TARGET_KL device $DEVICE n_envs $N_ENVS window $WINDOW checkpoint every $CHECKPOINT_FREQ sessions"
 echo "Model $MODEL.zip — resumes automatically if exists (5 actions LEFT/RIGHT/DOWN/A/B; old 7/6-act auto-starts fresh)"

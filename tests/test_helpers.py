@@ -179,6 +179,21 @@ class TestRobustObs:
         assert obs["board"].shape == (18, 10)
         assert obs["next"].shape == (7,)
 
+    def test_vectorized_stats_parity(self, helper_env):
+        """_board_stats must match legacy scalar helpers on varied boards."""
+        rng = np.random.default_rng(7)
+        for _ in range(50):
+            density = rng.random()
+            b = ((rng.random((18, 10)) < density) * rng.integers(0, 9, size=(18, 10))).astype(np.uint8)
+            heights, holes, bump, lines = helper_env._board_stats(b)
+            assert list(heights) == [helper_env.get_column_height(b[:, c], 18) for c in range(10)]
+            assert holes == helper_env.get_holes_count(b)
+            assert bump == helper_env.get_bumpiness(b)
+            assert lines == helper_env.get_complete_lines(b)
+            f = helper_env.get_features(b)
+            assert f.shape == (14,) and f.dtype == np.float32
+            assert (f >= 0).all() and (f <= 1).all()
+
     def test_obs_mode_guard(self):
         with pytest.raises(ValueError, match="Invalid obs_mode"):
             tetris_env(gb_path="roms/tetris.gb", window="null", obs_mode="bad", log_level="ERROR")
