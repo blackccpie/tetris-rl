@@ -524,6 +524,11 @@ def train(args):
                 callback=eval_callback,
                 reset_num_timesteps=False,
             )
+            # Flush pending train/* records (loss/entropy/kl) into this session's
+            # TB file: each learn() call builds a new logger, so without an explicit
+            # dump these curves are silently dropped at every session boundary
+            # (reproduced: 50 sessions logged rollout-only, zero train scalars).
+            model.logger.dump(step=model.num_timesteps)
             # periodic checkpoint (and always on last session)
             is_checkpoint = checkpoint_freq > 0 and ((i + 1) % checkpoint_freq == 0)
             is_last = (i + 1) == args.sessions
